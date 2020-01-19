@@ -15,11 +15,11 @@
 #include "ltg_net.h"
 #include "ltg_utils.h"
 #include "ltg_core.h"
-#include "utils/nodeid.h"
 #include "ltg_lib.h"
 
 ltgconf_t ltgconf_global;
 ltg_netconf_t ltg_netconf_global;
+ltg_netconf_t ltg_netconf_manage;
 ltg_global_t ltg_global;
 int ltg_nofile_max = 0;
 
@@ -63,36 +63,17 @@ static void __ltg_global_init()
 }
 
 
-/*
-int ltg_conf_init(const char *sysname, const char *srv_name, const char *workdir,
-                  uint64_t coremask, int rpc_timeout, int polling_timeout, int rdma,
-                  int performance_analysis, int use_huge,
-                  int backtrace, int daemon, int coreflag)
-*/
-
-int ltg_conf_init(ltgconf_t *ltgconf, ltg_netconf_t *ltgnet_conf)
+int ltg_conf_init(ltgconf_t *ltgconf, const char *system_name)
 {
         int ret;
 
         __ltg_global_init();
-        
+
         ret = __get_nofailmax(&ltg_nofile_max);
         if (ret)
                 GOTO(err_ret, ret);
 
         memset(ltgconf, 0x0, sizeof(*ltgconf));
-        memset(ltgnet_conf, 0x0, sizeof(*ltgnet_conf));
-
-#if 0
-        strcpy(ltgconf->system_name, sysname);
-        strcpy(ltgconf->service_name, srv_name);
-        if (workdir) {
-                strcpy(ltgconf->workdir, workdir);
-        } else {
-                LTG_ASSERT(!daemon);
-                ltgconf->workdir[0] = '\0';
-        }
-#endif
 
         ltgconf->maxcore = 1;
         ltgconf->hb_retry = 2;
@@ -101,48 +82,27 @@ int ltg_conf_init(ltgconf_t *ltgconf, ltg_netconf_t *ltgnet_conf)
         ltgconf->rmem_max = XMITBUF;
 
         memset(&ltg_netconf_global, 0x0, sizeof(ltg_netconf_global));
+        memset(&ltg_netconf_manage, 0x0, sizeof(ltg_netconf_manage));
 
-        return 0;
-err_ret:
-        return ret;
-}
-
-static int __nodeid_init(const char *name)
-{
-        int ret;
-        nodeid_t id;
-
-        ret = nodeid_load(&id);
-        if (ret) {
-                if (ret == ENOENT) {
-                        ret = nodeid_init(&id, name);
-                        if (ret)
-                                GOTO(err_ret, ret);
-
-                } else
-                        GOTO(err_ret, ret);
-        }
-
-        nid_t nid;
-        nid.id = id;
-        net_setnid(&nid);
+        strcpy(ltgconf->system_name, system_name);
+        strcpy(ltgconf_global.system_name, system_name);
         
         return 0;
 err_ret:
         return ret;
 }
 
-static int __ltg_init_stage1(const char *name)
+static int __ltg_init_stage1(const nid_t *nid, const char *name)
 {
         int ret;
 
+        (void) name;
+        
         fnotify_init();
         dmsg_init(ltgconf_global.system_name);
 
         if (ltgconf_global.daemon) {
-                ret = __nodeid_init(name);
-                if (ret)
-                        GOTO(err_ret, ret);
+                net_setnid(nid);
         }
 
         ret = sche_init();
@@ -164,7 +124,7 @@ static int __ltg_init_stage1(const char *name)
         ret = etcd_init();
         if (ret)
                 GOTO(err_ret, ret);
-
+        
         DINFO("stage1 inited\n");
         
         return 0;
@@ -206,7 +166,8 @@ err_ret:
         return ret;
 }
 
-int ltg_init(const ltgconf_t *ltgconf, const ltg_netconf_t *ltgnet_conf)
+int ltg_init(const ltgconf_t *ltgconf, const ltg_netconf_t *ltgnet_manage,
+             const ltg_netconf_t *ltgnet_conf)
 {
         int ret;
 
@@ -224,8 +185,17 @@ int ltg_init(const ltgconf_t *ltgconf, const ltg_netconf_t *ltgnet_conf)
                         = ltgnet_conf->network[i].mask;
                 ltg_netconf_global.count++;
         }
+
+        ltg_netconf_manage.count = 0;
+        for (int i = 0; i < ltgnet_manage->count; i++) {
+                ltg_netconf_manage.network[i].network
+                        = ltgnet_manage->network[i].network;
+                ltg_netconf_manage.network[i].mask
+                        = ltgnet_manage->network[i].mask;
+                ltg_netconf_manage.count++;
+        }
         
-        ret = __ltg_init_stage1(ltgconf_global.service_name);
+        ret = __ltg_init_stage1(&ltgconf->nid, ltgconf_global.service_name);
         if (ret)
                 GOTO(err_ret, ret);
 

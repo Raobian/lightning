@@ -46,12 +46,12 @@ static int  __etcd_set__(const char *key, const char *value,
         
         etcd_close_str(sess);
 
-        free(host);
+        ltg_free1(host);
         return 0;
 err_close:
         etcd_close_str(sess);
 err_ret:
-        free(host);
+        ltg_free1(host);
         return ret;
 }
 
@@ -85,12 +85,12 @@ static int __etcd_get__(const char *srv, const char *key, etcd_node_t **result, 
 
         etcd_close_str(sess);
 
-        free(host);
+        ltg_free1(host);
         return 0;
 err_close:
         etcd_close_str(sess);
 err_ret:
-        free(host);
+        ltg_free1(host);
         return ret;
 }
 
@@ -507,6 +507,7 @@ int etcd_update_text(const char *prefix, const char *_key, const char *_value,
                 GOTO(err_ret, ret);
         }
 
+#if 0
         if (idx) {
                 ret = etcd_get_text(prefix, _key, tmp, idx);
                 if (ret)
@@ -514,6 +515,7 @@ int etcd_update_text(const char *prefix, const char *_key, const char *_value,
 
                 LTG_ASSERT(strcmp(_value, tmp) == 0);
         }
+#endif
         
         return 0;
 err_ret:
@@ -905,12 +907,12 @@ int etcd_unlock(etcd_lock_t *lock)
 
         etcd_close_str(sess);
 
-        free(host);
+        ltg_free1(host);
         return 0;
 err_close:
         etcd_close_str(sess);
 err_free:
-        free(host);
+        ltg_free1(host);
 err_ret:
         return ret;
 }
@@ -1007,13 +1009,13 @@ int etcd_lock_watch(etcd_lock_t *lock, char *locker, nid_t *nid, uint32_t *magic
 
         etcd_close_str(sess);
         free_etcd_node(node);
-        free(host);
+        ltg_free1(host);
         
         return 0;
 err_close:
         etcd_close_str(sess);
 err_ret:
-        free(host);
+        ltg_free1(host);
         return ret;
 }
 
@@ -1049,13 +1051,13 @@ int etcd_del2(char *key)
         }
 
         etcd_close_str(sess);
-        free(host);
+        ltg_free1(host);
 
         return 0;
 err_close:
         etcd_close_str(sess);
 err_ret:
-        free(host);
+        ltg_free1(host);
         return ret;
 }
 
@@ -1091,13 +1093,13 @@ int etcd_del_dir(const char *prefix, const char *_key, int recursive)
         }
 
         etcd_close_str(sess);
-        free(host);
+        ltg_free1(host);
 
         return 0;
 err_close:
         etcd_close_str(sess);
 err_ret:
-        free(host);
+        ltg_free1(host);
         return ret;
 }
 

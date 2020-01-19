@@ -184,7 +184,7 @@ inline int ltg_realloc(void **_ptr, size_t size, size_t newsize)
         for (i = 0; i < 3; i++) {
                 ptr = realloc(*_ptr, newsize);
                 if (ptr != NULL) {
-                        __ltg_malloc_bind(ptr, size);
+                        __ltg_malloc_bind(ptr, newsize);
                         goto out;
                 }
         }
@@ -212,6 +212,11 @@ int ltg_free(void **ptr)
         *ptr = NULL;
 
         return 0;
+}
+
+void ltg_free1(void *ptr)
+{
+        free(ptr);
 }
 
 int huge_mem_alloc1(void **_ptr, size_t size)
@@ -246,4 +251,3 @@ void huge_mem_free(void *ptr)
 {
         ltg_free(&ptr);
 }
-

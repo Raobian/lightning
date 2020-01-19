@@ -154,7 +154,8 @@ static int __rpc_table_check(rpc_table_t *rpc_table, slot_t *slot, uint32_t now)
 #if 0
                         UNIMPLEMENTED(__DUMP__);
 #else
-                        corenet_close(closed);
+                        DBUG("skip corenet close\n");
+                        //corenet_close(closed);
 #endif
                 } else {
 #if 0
@@ -261,7 +262,7 @@ static void  *__rpc_table_scan_worker(void *arg)
                         sleep(1);
                 }
 
-                interval = _min(ltgconf_global.rpc_timeout, 3);
+                interval = _min(ltgconf_global.rpc_timeout, 1);
                 rpc_table_scan(rpc_table, interval, 0);
         }
 

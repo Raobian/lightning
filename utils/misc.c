@@ -534,7 +534,7 @@ void IO_FUNC *_opaque_encode(void *buf, uint32_t *len, ...)
                 value = va_arg(ap, char *);
                 valuelen = va_arg(ap, uint32_t);
 
-                DBUG("encode %s len %u\n", (char *)value, valuelen);
+                //DBUG("encode %s len %u\n", (char *)value, valuelen);
 
                 if (value == NULL)
                         break;
@@ -856,7 +856,7 @@ void _backtrace_caller(const char *name, int start, int end)
         ltg_free((void *)&buf);
 
         if (strframe) {
-                free(strframe);
+                ltg_free1(strframe);
                 strframe = NULL;
         }
 }
@@ -904,7 +904,7 @@ void calltrace(char *buf, size_t buflen)
         }
 
         if (strframe) {
-                free(strframe);
+                ltg_free1(strframe);
                 strframe = NULL;
         }
 }

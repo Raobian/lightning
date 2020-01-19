@@ -43,6 +43,18 @@ int core_used(int idx)
         return core_usedby(__core_mask__, idx);
 }
 
+int core_count(uint64_t mask)
+{
+        int count = 0;
+        for (int i = 0; i < CORE_MAX; i++) {
+                if (core_usedby(mask, i)) {
+                        count++;
+                }
+        }
+
+        return count;
+}
+
 uint64_t core_mask()
 {
         return __core_mask__;
@@ -67,12 +79,12 @@ STATIC void *__core_check_health__(void *_arg)
                         if (unlikely(core == NULL))
                                 continue;
 
-                        int tmo = core->flag & CORE_FLAG_POLLING ? 3 : 10;
+                        //int tmo = core->flag & CORE_FLAG_POLLING ? 3 : 10;
+                        int tmo = 10;
 
                         if (unlikely(now - core->keepalive > tmo)) {
                                 DERROR("polling core[%d] block !!!!!\n", core->hash);
                                 LTG_ASSERT(0);
-                                EXIT(EAGAIN);
                         }
                 }
         }
@@ -81,38 +93,31 @@ STATIC void *__core_check_health__(void *_arg)
 static void IO_FUNC core_stat(core_t *core)
 {
         int sid, taskid, task_wait, task_used, task_runable, ring_count;
-        uint64_t run_time, io_time, c_runtime;
-        uint32_t queue_count, io_queue = 0, io_lat = 0;
+        uint64_t run_time, c_runtime;
 
-        sche_stat(&sid, &taskid, &task_runable, &task_wait, &task_used, &run_time, &queue_count, &io_time, &c_runtime);
+        sche_stat(&sid, &taskid, &task_runable, &task_wait, &task_used,
+                  &run_time, &c_runtime);
         ring_count = core_ring_count(core);
 
         _gettimeofday(&core->stat_t2, NULL);
         uint64_t used = _time_used(&core->stat_t1, &core->stat_t2);
         if (used > 0) {
-            if (queue_count == 0)
-                io_queue = 0;
-            else {
-                io_queue = io_time / used;
-                io_lat = io_time / queue_count;
-            }
-#if ENABLE_PERF
-                      DINFO("%s[%d] pps:%jd task:%u/%u/%lu/%u/%u ring:%u, counter:%ju cpu_usage(%ju%), nvme_io_stat(%u/%u) perf %u\n",
-#else
-                      DINFO("%s[%d] pps:%jd task:%u/%u/%lu/%u/%u/%lu ring:%u counter:%ju cpu %ju io %u/%u\n",
-#endif
+                DINFO("%s[%d] "
+                      "pps:%jd "
+                      "task:%u/%u/%u/%u "
+                      "ring:%u "
+                      "counter:%ju "
+                      "cpu %ju \n",
                       core->name, core->hash,
                       (core->stat_nr2 - core->stat_nr1) * 1000000 / used,
-                      core->sche->task_count, task_used, c_runtime / used, task_wait, task_runable, c_runtime,
-                      ring_count, core->sche->counter / (core->stat_nr2 - core->stat_nr1), (run_time * 100)/ used,
-#if ENABLE_PERF
-                      io_lat, io_queue , get_io());
-#else
-                      io_lat, io_queue);
-#endif
-                      core->stat_t1 = core->stat_t2;
-                      core->stat_nr1 = core->stat_nr2;
-                      core->sche->counter = 0;
+                      core->sche->task_count, task_used, task_wait, task_runable,
+                      ring_count,
+                      core->sche->counter / (core->stat_nr2 - core->stat_nr1),
+                      (run_time * 100)/ used);
+
+                core->stat_t1 = core->stat_t2;
+                core->stat_nr1 = core->stat_nr2;
+                core->sche->counter = 0;
         }
 }
 
@@ -148,7 +153,7 @@ void IO_FUNC core_worker_run(core_t *core)
         time_t now = gettime();
         core->keepalive = now;
 
-        if (unlikely(now - core->last_scan > 3)) {
+        if (unlikely(now - core->last_scan > 2)) {
                 core->last_scan = now;
 
                 list_for_each(pos, &core->scan_list) {
@@ -301,8 +306,6 @@ static int __core_create(core_t **_core, const char *name, int hash, int flag)
         int ret, lock;
         core_t *core;
 
-        UNIMPLEMENTED(__WARN__);//slab_stream_alloc
-
         ret = ltg_malloc((void **)&core, sizeof(*core));
         if (unlikely(ret))
                 GOTO(err_ret, ret);
@@ -366,7 +369,7 @@ int core_init(uint64_t mask, int flag)
 
         __core_mask__ = mask;
 
-        ret = cpuset_init();
+        ret = cpuset_init(mask);
         if (unlikely(ret))
                 UNIMPLEMENTED(__DUMP__);
 
@@ -630,8 +633,13 @@ int core_getid(coreid_t *coreid)
                 GOTO(err_ret, ret);
         }
 
-        coreid->nid = *net_getnid();
-        LTG_ASSERT(coreid->nid.id > 0);
+        if (likely(ltgconf_global.daemon)) {
+                coreid->nid = *net_getnid();
+                LTG_ASSERT(coreid->nid.id > 0);
+        } else {
+                coreid->nid.id = 0;
+        }
+
         coreid->idx = core->hash;
 
         return 0;
@@ -854,11 +862,12 @@ void core_tls_set(int type, void *ptr)
         core->tls[type] = ptr;
 }
 
-void coremask_trans(coremask_t *coremask, uint64_t mask)
+void coremask_trans(coremask_t *_coremask, uint64_t mask)
 {
         char tmp[MAX_NAME_LEN];
+        coremask_t coremask;
 
-        memset(coremask, 0x0, sizeof(*coremask));
+        memset(&coremask, 0x0, sizeof(coremask));
 
         tmp[0] = '\0';
         for (int i = 0; i < CORE_MAX; i++) {
@@ -866,14 +875,16 @@ void coremask_trans(coremask_t *coremask, uint64_t mask)
                         continue;
                 }
 
-                coremask->coreid[coremask->count] = i;
-                coremask->count++;
+                coremask.coreid[coremask.count] = i;
+                coremask.count++;
 
                 snprintf(tmp + strlen(tmp), MAX_NAME_LEN, "%d,", i);
         }
 
-        LTG_ASSERT(coremask->count);
+        LTG_ASSERT(coremask.count);
 
+        memcpy(_coremask, &coremask, sizeof(coremask));
+        
         DINFO("mask 0x%x %s\n", mask, tmp);
 }
 

@@ -236,8 +236,8 @@ int tcp_sock_tuning(int sd, int tuning, int nonblock)
         }
 
         if (xmit_buf != ltgconf_global.wmem_max * 2) {
-                DERROR("Can't set tcp send buf to %d (got %d)\n",
-                       ltgconf_global.wmem_max, xmit_buf);
+                DINFO("Can't set tcp send buf to %d (got %d)\n",
+                      ltgconf_global.wmem_max, xmit_buf);
         }
 
         DBUG("sock %u, send buf %u\n", sd, xmit_buf);
@@ -253,8 +253,8 @@ int tcp_sock_tuning(int sd, int tuning, int nonblock)
         }
 
         if (xmit_buf != ltgconf_global.rmem_max * 2) {
-                DERROR("Can't set tcp recv buf to %d (got %d)\n",
-                       ltgconf_global.rmem_max, xmit_buf);
+                DINFO("Can't set tcp recv buf to %d (got %d)\n",
+                      ltgconf_global.rmem_max, xmit_buf);
         }
 
         DBUG("sock %u, recv buf %u\n", sd, xmit_buf);
@@ -280,9 +280,7 @@ int tcp_sock_bind(int *srv_sd, struct sockaddr *sin, int nonblock, int tuning)
         sd = socket(sin->sa_family, SOCK_STREAM, ppe.p_proto);
         if (sd == -1) {
                 ret = errno;
-
                 DERROR("proto %d name %s\n", ppe.p_proto, ppe.p_name);
-
                 GOTO(err_ret, ret);
         }
 
@@ -457,9 +455,9 @@ err_ret:
         return ret;
 }
 
-static int __tcp_sock_getaddr(uint32_t network, uint32_t mask, uint32_t *_addr)
+static int __tcp_sock_getaddr(uint32_t network, uint32_t mask, uint32_t *_addr, int *_new)
 {
-        int ret, sd, i, done;
+        int ret, sd, i, count = 0;
         uint32_t addr;
         char buf[MAX_BUF_LEN];
         struct ifconf ifc;
@@ -492,9 +490,8 @@ static int __tcp_sock_getaddr(uint32_t network, uint32_t mask, uint32_t *_addr)
 
         ifcreq = ifc.ifc_req;
 
-        done = 0;
+        int idx = 0;
         for (i = ifc.ifc_len / sizeof(struct ifreq); --i >= 0; ifcreq++) {
-
                 strncpy(ifr.ifr_name, ifcreq->ifr_name,
                          strlen(ifcreq->ifr_name) + 1);
 
@@ -505,29 +502,31 @@ static int __tcp_sock_getaddr(uint32_t network, uint32_t mask, uint32_t *_addr)
                         GOTO(err_sd, ret);
                 }
 
+                sin = (struct sockaddr_in *)&ifcreq->ifr_addr;
+                addr = sin->sin_addr.s_addr;
+
+                idx++;
                 if ((ifr.ifr_flags & IFF_UP) == 0)
                         continue;
 
-                sin = (struct sockaddr_in *)&ifcreq->ifr_addr;
-                addr = sin->sin_addr.s_addr;
-                DBUG("ifname %s, %s\n", ifcreq->ifr_name, _inet_ntoa(addr));
-                //DBUG("got sock info %s %u %s\n", _inet_ntoa(addr), i, ifcreq->ifr_name);
+                DBUG("ifname[%d] %s, %s, len %d\n", idx, ifcreq->ifr_name,
+                     _inet_ntoa(addr), ifc.ifc_len / sizeof(struct ifreq));
+                
                 if ((addr & mask) == (network & mask)) {
                         DBUG("ifname %s, %s\n", ifcreq->ifr_name, _inet_ntoa(addr));
-                        //DINFO("got sock info %u & %u  %u & %u\n", addr, mask, network, mask);
-                        done = 1;
-                        break;
+                        _addr[count] = addr;
+                        count++;
                 }
         }
 
         close(sd);
 
-        if (done == 0) {
+        if (count == 0) {
                 ret = ENONET;
                 GOTO(err_ret, ret);
         }
 
-        *_addr = addr;
+        *_new = count;
 
         return 0;
 err_sd:
@@ -537,25 +536,28 @@ err_ret:
 }
                 
 int tcp_sock_getaddr(uint32_t *info_count, sock_info_t *info,
-                     uint32_t info_count_max, uint32_t port)
+                     uint32_t info_count_max, uint32_t port,
+                     const ltg_netconf_t *filter)
 {
-        int ret, i;
-        uint32_t addr, count;
+        int ret, i, new = 32;
+        uint32_t addr[new], count;
 
         count = 0;
-        for (i = 0; i < ltg_netconf_global.count; i++) {
+        for (i = 0; i < filter->count; i++) {
                 LTG_ASSERT(count < info_count_max);
-                ret = __tcp_sock_getaddr(ltg_netconf_global.network[i].network,
-                                         ltg_netconf_global.network[i].mask, &addr);
+                ret = __tcp_sock_getaddr(filter->network[i].network,
+                                         filter->network[i].mask, addr, &new);
                 if (unlikely(ret)) {
                         continue;
                 }
 
                 DBUG("info[%u] addr %u\n", count, addr);
 
-                info[count].addr = addr;
-                info[count].port = htons(port);
-                count++;
+                for (int j = 0; j < new; j++) {
+                        info[count].addr = addr[j];
+                        info[count].port = htons(port);
+                        count++;
+                }
         }
 
         DBUG("get sock count %u\n", count);

@@ -29,15 +29,7 @@ void dbg_sub_init()
 
 void dbg_info(int i)
 {
-#if 1
-        if (ltgconf_global.testing) {
-                __d_info__ = __D_INFO;
-        } else {
-                __d_info__ = i;
-        }
-#else
-        __d_info__ = i;
-#endif
+        __d_info__ = i ? __D_INFO : 0;
 }
 
 void dbg_goto(int i)
@@ -99,13 +91,16 @@ err_ret:
 
 static int __dmsg_goto(const char *buf, uint32_t extra)
 {
-        (void) extra;
-        DINFO("set goto %s\n", buf);
+        int on = atoi(buf);
 
-        if (strcmp(buf, "0") == 0) {
-                dbg_goto(0);
-        } else {
+        (void) extra;
+
+        DINFO("set goto %d\n", on);
+
+        if (on) {
                 dbg_goto(1);
+        } else {
+                dbg_goto(0);
         }
 
         return 0;
