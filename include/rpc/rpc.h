@@ -22,12 +22,18 @@ void stdrpc_reply_error_prep(const msgid_t *msgid, ltgbuf_t *buf, int _error);
 void stdrpc_reply(const sockid_t *sockid, const msgid_t *msgid,
                const void *_buf, int len);
 void stdrpc_reply1(const sockid_t *sockid, const msgid_t *msgid, ltgbuf_t *_buf);
-void stdrpc_reply_init_prep(const msgid_t *msgid, ltgbuf_t *buf, ltgbuf_t *data, int flag);
+void stdrpc_reply_init_prep(const msgid_t *msgid, ltgbuf_t *buf, ltgbuf_t *data,
+                            uint64_t latency, int flag);
 
 /* rpc_xnect.c */
 int rpc_getinfo(char *infobuf, uint32_t *infobuflen);
 
 /* rpc_request.c */
+
+int stdrpc_request_wait2(const char *name, const coreid_t *coreid,
+                         const void *request, int reqlen,
+                         void *reply, int *replen, int msg_type,
+                         int timeout);
 
 int stdrpc_request_wait3(const char *name, const coreid_t *coreid, const void *request,
                       int reqlen, const ltgbuf_t *wbuf, ltgbuf_t *rbuf, int msg_type,

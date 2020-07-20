@@ -15,6 +15,8 @@
 #include "ltg_core.h"
 #include "ltg_net.h"
 
+extern int ltg_nofile_max;
+
 static void IO_FUNC  __corenet_routine(void *_core, void *var, void *_corenet)
 {
         (void) _core;
@@ -23,7 +25,6 @@ static void IO_FUNC  __corenet_routine(void *_core, void *var, void *_corenet)
         if (likely(ltgconf_global.rdma)) {
                 corenet_rdma_commit(((__corenet_t *)_corenet)->rdma_net);
         } else {
-                corenet_tcp_check_add();
                 corenet_tcp_commit(var);
         }
 
@@ -36,7 +37,7 @@ static void __corenet_scan(void *_core, void *var, void *_corenet)
         (void) _corenet;
         (void) var;
 
-        if (unlikely(!ltgconf_global.rdma || ltgconf_global.tcp_discovery)) {
+        if (unlikely(!ltgconf_global.rdma)) {
                 corenet_tcp_check();
         }
 
@@ -86,7 +87,7 @@ static int __corenet_tcp_init(core_t *core, __corenet_t *corenet, int flag)
         (void) core;
         (void) flag;
 
-        ret = corenet_tcp_init(32768, (corenet_tcp_t **)&corenet->tcp_net);
+        ret = corenet_tcp_init(ltg_nofile_max, (corenet_tcp_t **)&corenet->tcp_net);
         if (unlikely(ret))
                 GOTO(err_ret, ret);
 
@@ -121,7 +122,7 @@ static int __corenet_rdma_init(__corenet_t *corenet, int flag)
         (void) flag;
 
         corenet->dev_count = 0;
-        ret = corenet_rdma_init(32768, (corenet_rdma_t **)&corenet->rdma_net);
+        ret = corenet_rdma_init(ltg_nofile_max, (corenet_rdma_t **)&corenet->rdma_net);
         if (unlikely(ret))
                 GOTO(err_ret, ret);
 
@@ -159,7 +160,6 @@ static int __corenet_init(va_list ap)
                 ret = __corenet_rdma_init(corenet, *flag);
                 if (unlikely(ret))
                         GOTO(err_free, ret);
-
         } else {
                 ret = __corenet_tcp_init(core, corenet, *flag);
                 if (unlikely(ret))
@@ -195,13 +195,15 @@ int corenet_init(int flag)
 {
         int ret;
 #if ENABLE_RDMA
-        ret = rdma_event_init();
-        if (ret)
-                GOTO(err_ret, ret);
+        if (ltgconf_global.rdma && ltgconf_global.daemon) {
+                ret = rdma_event_init();
+                if (ret)
+                        GOTO(err_ret, ret);
 
-        ret = corenet_rdma_evt_channel_init();
-        if (ret)
-                GOTO(err_ret, ret);
+                ret = corenet_rdma_evt_channel_init();
+                if (ret)
+                        GOTO(err_ret, ret);
+        }
 #endif
         ret = core_init_modules("corenet", __corenet_init, &flag, NULL);
         if (unlikely(ret))
@@ -230,7 +232,7 @@ static int __corenet_get_numaid(uint32_t addr, int *numaid)
                 GOTO(err_ret, ret);
         }
 
-        DINFO("addr %s device %s numa node %s\n", _inet_ntoa(addr), name, value);
+        DBUG("addr %s device %s numa node %s", _inet_ntoa(addr), name, value);
 
         *numaid = atoi(value);
         
@@ -260,24 +262,24 @@ static int __corenet_getaddr____(const core_t *core, uint32_t port,
         int count = 0;
         for (int i = 0; i < info->info_count; i++) {
                 if (force) {
-                        DWARN("%s[%u] use cross core addr %s:%u\n", core->name,
-                              addr->coreid.idx, _inet_ntoa(info->info[i].addr),
-                              info->info[i].port);
+                        DBUG("%s[%u] use cross core addr %s:%u\n", core->name,
+                             addr->coreid.idx, _inet_ntoa(info->info[i].addr),
+                             info->info[i].port);
 
                         addr->info[count] = info->info[i];
                         count++;
                 } else {
-                        ret = __corenet_get_numaid(addr->info[i].addr, &numaid);
+                        ret = __corenet_get_numaid(info->info[i].addr, &numaid);
                         if (ret)
                                 continue;
 
                         if (force == 0 && core->main_core
                             && numaid != core->main_core->node_id) {
-                                DINFO("%s[%u] skip addr %s:%u\n", core->name,
+                                DBUG("%s[%u] skip addr %s:%u\n", core->name,
                                       addr->coreid.idx, _inet_ntoa(info->info[i].addr),
                                       info->info[i].port);
                         } else {
-                                DINFO("%s[%u] use addr %s:%u\n", core->name,
+                                DBUG("%s[%u] use addr %s:%u\n", core->name,
                                       addr->coreid.idx, _inet_ntoa(info->info[i].addr),
                                       info->info[i].port);
 
@@ -308,15 +310,21 @@ int __corenet_getaddr__(uint32_t port, corenet_addr_t *addr)
         int ret;
         core_t *core = core_self();
 
-        ret = __corenet_getaddr____(core, port, addr, 0);
-        if (ret) {
-                if (ret == ENODEV) {
-                        ret = __corenet_getaddr____(core, port, addr, 1);
-                        if (ret)
+        if (ltgconf_global.numa) {
+                ret = __corenet_getaddr____(core, port, addr, 0);
+                if (ret) {
+                        if (ret == ENODEV) {
+                                ret = __corenet_getaddr____(core, port, addr, 1);
+                                if (ret)
+                                        GOTO(err_ret, ret);
+                        } else {
                                 GOTO(err_ret, ret);
-                } else {
-                        GOTO(err_ret, ret);
+                        }
                 }
+        } else {
+                ret = __corenet_getaddr____(core, port, addr, 1);
+                if (ret)
+                        GOTO(err_ret, ret);
         }
         
         return 0;
@@ -356,22 +364,6 @@ err_ret:
         return ret;
 }
 
-int corenet_attach(void *_corenet, const sockid_t *sockid, void *ctx,
-                   core_exec exec, func_t reset, func_t check, func_t recv,
-                   const char *name)
-{
-        __corenet_t *corenet = _corenet;
-
-        if (ltgconf_global.rdma) {
-                UNIMPLEMENTED(__DUMP__);
-                return 0;
-        } else {
-                return corenet_tcp_add(corenet->tcp_net, sockid, ctx, exec,
-                                       reset, check, recv, name);
-        }
-}
-
-
 int corenet_send(void *ctx, const sockid_t *sockid, ltgbuf_t *buf)
 {
 
@@ -386,13 +378,57 @@ int corenet_send(void *ctx, const sockid_t *sockid, ltgbuf_t *buf)
 void corenet_close(const sockid_t *sockid)
 {
         if (ltgconf_global.rdma && sockid->rdma_handler != NULL) {
-                corenet_rdma_close((rdma_conn_t *)sockid->rdma_handler);
+                corenet_rdma_close((rdma_conn_t *)sockid->rdma_handler, __FUNCTION__);
         } else {
                 corenet_tcp_close(sockid);
         }
 }
 
+static uint64_t __mask__ = 0;
+
+static void *__corenet_register(void *_mask)
+{
+        (void) _mask;
+        
+        while (srv_running) {
+                sleep(5);
+#if 0
+                corenet_maping_offline(__mask__);
+#else
+                corenet_maping_register(__mask__);
+#endif
+        }
+
+        pthread_exit(NULL);
+}
+
 int corenet_register(uint64_t coremask)
 {
-        return corenet_maping_register(coremask);
+        int ret;
+        nid_t nid = *net_getnid();
+        char key[MAX_PATH_LEN];
+
+        snprintf(key, MAX_NAME_LEN, "%d/coremask", nid.id);
+        ret = etcd_create(ETCD_CORENET, key, (void *)&coremask,
+                          sizeof(coremask), -1);
+        if (unlikely(ret)) {
+                ret = etcd_update(ETCD_CORENET, key, (void *)&coremask,
+                                  sizeof(coremask), NULL, -1);
+                if (unlikely(ret))
+                        GOTO(err_ret, ret);
+        }
+        
+        __mask__ = coremask;
+
+        ret = corenet_maping_register(__mask__);
+        if (unlikely(ret))
+                GOTO(err_ret, ret);
+        
+        ret = ltg_thread_create(__corenet_register, NULL, "corenet register");
+        if (unlikely(ret))
+                GOTO(err_ret, ret);
+
+        return 0;
+err_ret:
+        return ret;
 }

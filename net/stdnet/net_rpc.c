@@ -21,6 +21,8 @@ typedef struct {
 
 typedef enum {
         NET_RPC_NULL = 0,
+        NET_RPC_HELLO1,
+        NET_RPC_HELLO2,
         NET_RPC_HEARTBEAT,
         NET_RPC_COREADDR,
         NET_RPC_CORES,
@@ -117,6 +119,112 @@ err_ret:
         return ret;
 }
 
+static int __net_srv_hello1(const sockid_t *sockid, const msgid_t *msgid, ltgbuf_t *_buf)
+{
+        int buflen;
+        msg_t *req;
+        char buf[MAX_BUF_LEN];
+        uint64_t *seq;
+
+        ANALYSIS_BEGIN(0);
+        __getmsg(_buf, &req, &buflen, buf);
+
+        DBUG("hello id (%u, %x)\n", msgid->idx, msgid->figerprint);
+
+        _opaque_decode(req->buf, buflen,
+                       &seq, NULL,
+                       NULL);
+
+        stdrpc_reply(sockid, msgid, NULL, 0);
+
+        ANALYSIS_END(0, 1000 * 100, NULL);
+        
+        return 0;
+}
+
+static int __net_srv_hello2(const sockid_t *sockid, const msgid_t *msgid, ltgbuf_t *_buf)
+{
+        int buflen;
+        msg_t *req;
+        char buf[MAX_BUF_LEN];
+        uint64_t *seq;
+
+        ANALYSIS_BEGIN(0);
+        __getmsg(_buf, &req, &buflen, buf);
+
+        DBUG("hello id (%u, %x)\n", msgid->idx, msgid->figerprint);
+
+        _opaque_decode(req->buf, buflen,
+                       &seq, NULL,
+                       NULL);
+
+        corerpc_reply(sockid, msgid, NULL, 0);
+
+        ANALYSIS_END(0, 1000 * 100, NULL);
+        
+        return 0;
+}
+
+int net_rpc_hello1(const sockid_t *sockid, uint64_t seq)
+{
+        int ret;
+        char buf[MAX_BUF_LEN];
+        uint32_t count;
+        msg_t *req;
+        net_handle_t nh;
+
+        ANALYSIS_BEGIN(0);
+
+        req = (void *)buf;
+        req->op = NET_RPC_HELLO1;
+        _opaque_encode(req->buf, &count, &seq, sizeof(seq), NULL);
+
+        sock2nh(&nh, sockid);
+        ret = stdrpc_request_wait_sock("hello1", &nh,
+                                       req, sizeof(*req) + count,
+                                       NULL, NULL,
+                                       MSG_NET, 0, ltgconf_global.hb_timeout);
+        if (unlikely(ret))
+                GOTO(err_ret, ret);
+
+        DBUG("corenet hello success\n");
+
+        ANALYSIS_END(0, 1000 * 500, NULL);
+
+        return 0;
+err_ret:
+        return ret;
+}
+
+int net_rpc_hello2(const coreid_t *coreid, const sockid_t *sockid, uint64_t seq)
+{
+        int ret;
+        char buf[MAX_BUF_LEN];
+        uint32_t count;
+        msg_t *req;
+
+        ANALYSIS_BEGIN(0);
+
+        req = (void *)buf;
+        req->op = NET_RPC_HELLO2;
+        _opaque_encode(req->buf, &count, &seq, sizeof(seq), NULL);
+
+        ret = corerpc_postwait_sock("hello2", coreid, sockid,
+                                    req, sizeof(*req) + count, NULL,
+                                    NULL, MSG_NET, -1, -1,
+                                    ltgconf_global.hb_timeout);
+        if (unlikely(ret))
+                GOTO(err_ret, ret);
+
+        DBUG("corenet hello success\n");
+        
+        ANALYSIS_END(0, 1000 * 500, NULL);
+
+        return 0;
+err_ret:
+        return ret;
+}
+
 static void __request_handler(void *arg)
 {
         int ret;
@@ -160,151 +268,18 @@ err_ret:
         return;
 }
 
-#if 0
-static int __net_srv_corenetinfo(const sockid_t *sockid, const msgid_t *msgid,
-                                 ltgbuf_t *_buf)
-{
-        int ret, buflen;
-        msg_t *req;
-        char *buf = slab_stream_alloc(PAGE_SIZE);
-        const nid_t *nid;
-        const coreid_t *coreid;
-        char _addr[MAX_BUF_LEN];
-        corenet_addr_t *addr;
-
-        __getmsg(_buf, &req, &buflen, buf);
-
-        _opaque_decode(req->buf, buflen,
-                       &nid, NULL,
-                       &coreid, NULL,
-                       NULL);
-
-        addr = (void *)_addr;
-        ret = corenet_getaddr(coreid, addr);
-        if (unlikely(ret))
-                GOTO(err_ret, ret);
-
-        stdrpc_reply(sockid, msgid, addr, addr->len);
-
-        slab_stream_free(buf);
-
-        return 0;
-err_ret:
-        slab_stream_free(buf);
-        return ret;
-}
-
-int net_rpc_coreinfo(const coreid_t *coreid, corenet_addr_t *addr)
-{
-        int ret;
-        char *buf = slab_stream_alloc(PAGE_SIZE);
-        uint32_t count;
-        msg_t *req;
-        const nid_t *nid = &coreid->nid;
-        int buflen = MAX_BUF_LEN;
-
-        ret = network_connect(nid, NULL, 1, 0);
-        if (unlikely(ret))
-                GOTO(err_ret, ret);
-        
-        ANALYSIS_BEGIN(0);
-
-        req = (void *)buf;
-        req->op = NET_RPC_COREADDR;
-        _opaque_encode(&req->buf, &count,
-                       net_getnid(), sizeof(nid_t),
-                       coreid, sizeof(*coreid),
-                       NULL);
-
-        ret = stdrpc_request_wait("net_rpc_corenetinfo", nid,
-                               req, sizeof(*req) + count, (void *)addr, &buflen,
-                               MSG_NET, 0, ltgconf_global.rpc_timeout);
-        if (unlikely(ret))
-                GOTO(err_ret, ret);
-
-        ANALYSIS_QUEUE(0, IO_WARN, NULL);
-
-        slab_stream_free(buf);
-
-        return 0;
-err_ret:
-        slab_stream_free(buf);
-        return ret;
-}
-#endif
-
-#if 0
-static int __net_srv_cores(const sockid_t *sockid, const msgid_t *msgid,
-                           ltgbuf_t *_buf)
-{
-        int buflen;
-        msg_t *req;
-        char *buf = slab_stream_alloc(PAGE_SIZE);
-        uint64_t mask;
-
-        __getmsg(_buf, &req, &buflen, buf);
-
-        mask = core_mask();
-
-        stdrpc_reply(sockid, msgid, &mask, sizeof(mask));
-
-        slab_stream_free(buf);
-
-        return 0;
-#if 0
-err_ret:
-        slab_stream_free(buf);
-        return ret;
-#endif
-}
-
-int net_rpc_coremask(const nid_t *nid, uint64_t *mask)
-{
-        int ret;
-        char *buf = slab_stream_alloc(PAGE_SIZE);
-        uint32_t count;
-        msg_t *req;
-        int buflen;
-
-        ret = network_connect(nid, NULL, 1, 0);
-        if (unlikely(ret))
-                GOTO(err_ret, ret);
-        
-        ANALYSIS_BEGIN(0);
-
-        req = (void *)buf;
-        req->op = NET_RPC_CORES;
-        _opaque_encode(&req->buf, &count,
-                       net_getnid(), sizeof(nid_t),
-                       NULL);
-
-        buflen = sizeof(*mask);
-        ret = stdrpc_request_wait("net_rpc_corenetinfo", nid,
-                                  req, sizeof(*req) + count, mask, &buflen,
-                                  MSG_NET, 0, ltgconf_global.rpc_timeout);
-        if (unlikely(ret))
-                GOTO(err_ret, ret);
-
-        ANALYSIS_QUEUE(0, IO_WARN, NULL);
-
-        slab_stream_free(buf);
-
-        return 0;
-err_ret:
-        slab_stream_free(buf);
-        return ret;
-}
-#endif
-
 int net_rpc_init()
 {
         __request_set_handler(NET_RPC_HEARTBEAT, __net_srv_heartbeat, "net_srv_heartbeat");
+        __request_set_handler(NET_RPC_HELLO1, __net_srv_hello1, "net_srv_hello");
+        __request_set_handler(NET_RPC_HELLO2, __net_srv_hello2, "net_srv_hello");
 #if 0
         __request_set_handler(NET_RPC_CORES, __net_srv_cores, "net_srv_cores");
         __request_set_handler(NET_RPC_COREADDR, __net_srv_corenetinfo, "net_srv_coreinfo");
 #endif
 
         rpc_request_register(MSG_NET, __request_handler, NULL);
+        corerpc_register(MSG_NET, __request_handler, NULL);
 
         return 0;
 }

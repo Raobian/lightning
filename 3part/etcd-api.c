@@ -34,24 +34,7 @@
 #define DBG_SUBSYS S_LTG_UTILS
 #include "utils/ltg_dbg.h"
 
-#if 0
-#define DBUG_LTG_ETCD
-#endif
-
-
-#ifdef DBUG_LTG_ETCD
-#include "ltg_conf.h"
-#include "ltg_misc.h"
-#include "ltg_conf.h"
-#include "macros.h"
-#include "ltg_id.h"
-#include "base64_urlsafe.h"
-#include "ltg_utils.h"
-#include "sche.h"
-#include "analysis.h"
-#include "etcd-api.h"
-#include "etcd.h"
-#endif
+#define ENABLE_ETCD_DBUG 0
 
 #define DEFAULT_ETCD_PORT       2379
 #define SL_DELIM                "\n\r\t ,;"
@@ -71,25 +54,30 @@ static long parse_http_code(long http_code)
 	long ret = 0;
 
 	switch(http_code) {
-		case 200:  //http is ok
-			ret = ETCD_OK;
-			break;
+        case 200:  //http is ok
+                ret = ETCD_OK;
+                break;
 
         case 201:  //http is ok,create new one
-			ret = ETCD_OK;
-			break;
+                ret = ETCD_OK;
+                break;
 
-		case 404:
-			ret = ETCD_ENOENT;
-			break;
+        case 400:
+                ret = ETCD_INVALID;
+                break;
 
-		case 412:
-			ret = ETCD_PREVCONT;
-			break;
-			
-		default:
-			ret = ETCD_PROTOCOL_ERROR;
-			break;
+        case 404:
+                ret = ETCD_ENOENT;
+                break;
+
+        case 412:
+                ret = ETCD_PREVCONT;
+                break;
+
+        default:
+                DWARN("http code %d\n", http_code);
+                ret = ETCD_PROTOCOL_ERROR;
+                break;
 	}
 
 	return ret;
@@ -115,6 +103,12 @@ static char *str_replace(char *str, char old, char new){
         return ptr;
 }
 
+static inline void etcd_auth_enable(CURL *curl)
+{
+        curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+        curl_easy_setopt(curl, CURLOPT_USERPWD, "root:ddww");
+        // DINFO("httpauth root:ddww\n");
+}
 
 static etcd_node_t *get_etcd_node_val(cJSON *obj){
         cJSON *tmpobj = obj;
@@ -344,24 +338,24 @@ etcd_get_one(_etcd_session *session, const char *key, etcd_server *srv, const ch
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, (long)1);
 
+        etcd_auth_enable(curl);
+
         curl_res = curl_easy_perform(curl);
         if (curl_res != CURLE_OK) {
-                print_curl_error("perform",curl_res);
-#ifdef DBUG_LTG_ETCD
-                DWARN("get error, http ret code: %d\n", curl_res);
-#endif
+                // print_curl_error("perform",curl_res);
+                DBUG("http code: %d\n", curl_res);
                 if (curl_res == CURLE_OPERATION_TIMEDOUT) {
                         res = ETCD_TIMEOUT;
                 }
-                
+
                 goto *err_label;
         }
-        
+
 	curl_res = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &retcode);
 	if(CURLE_OK == curl_res )
 	{
-		res = parse_http_code(retcode);	
-#ifdef DBUG_LTG_ETCD
+		res = parse_http_code(retcode);
+#if ENABLE_ETCD_DBUG
                 if (res != ETCD_OK)
                 {
                         DWARN("get error, http ret code: %ld, url %s\n", retcode, url);
@@ -399,13 +393,13 @@ etcd_result etcd_get(etcd_session session_as_void, char *key, long timeout,
         LTG_ASSERT(session->servers[num_servers].host == NULL);
         LTG_ASSERT(session->servers[num_servers].port == 0);
 #endif
-	
+
 	if (consistent) {
         	if (asprintf(&path, "%s?quorum=true",
                 	     key) < 0) {
             		return res;
         	}
-	}	
+	}
 
         for (srv = session->servers; srv->host; ++srv) {
 		if (consistent)
@@ -421,12 +415,12 @@ etcd_result etcd_get(etcd_session session_as_void, char *key, long timeout,
                         return res;
                 }
         }
-	
+
 	free(path);
         return res;
 }
 
-etcd_result etcd_watch(etcd_session session_as_void, char *pfx, const int *index_in, etcd_node_t **ppnode, int timeout){
+etcd_result etcd_watch(etcd_session session_as_void, const char *pfx, const int *index_in, etcd_node_t **ppnode, int timeout){
         _etcd_session   *session   = session_as_void;
         etcd_server     *srv;
         etcd_result     res = ETCD_ERR;
@@ -447,7 +441,7 @@ etcd_result etcd_watch(etcd_session session_as_void, char *pfx, const int *index
 
         if (index_in) {
                 if (asprintf(&path,"%s?wait=true&recursive=true&waitIndex=%d",
-                                        pfx,*index_in) < 0) {
+                             pfx,*index_in) < 0) {
                         return ETCD_ERR;
                 }
         } else {
@@ -470,9 +464,12 @@ etcd_result etcd_watch(etcd_session session_as_void, char *pfx, const int *index
                 }
         }
 
+#if 0
         if (*ppnode == NULL && res != ETCD_TIMEOUT) {
+                DWARN("ppnode NULL\n");
                 res = ETCD_PROTOCOL_ERROR;
         }
+#endif
 
         free(path);
         return res;
@@ -641,9 +638,12 @@ etcd_delete_dir (_etcd_session *session, const char *key, int recursive, etcd_se
 
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, (long)1);
 
+        etcd_auth_enable(curl);
+
         curl_res = curl_easy_perform(curl);
         if (curl_res != CURLE_OK) {
-                print_curl_error("perform",curl_res);
+                // print_curl_error("perform",curl_res);
+                DWARN("http code: %d\n", curl_res);
                 goto *err_label;
         }
 
@@ -726,7 +726,7 @@ etcd_set_one (_etcd_session *session, const char *key, const char *value,
                                         precond->value) < 0) {
                         goto *err_label;
                 }
-                
+
                 free(contents);
                 contents = c2;
                 err_label = &&free_contents;
@@ -766,12 +766,12 @@ etcd_set_one (_etcd_session *session, const char *key, const char *value,
         //need set it for multi-thread safe
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, (long)1);
 
+        etcd_auth_enable(curl);
+
         curl_res = curl_easy_perform(curl);
         if (curl_res != CURLE_OK) {
                 //print_curl_error("perform",curl_res);
-#ifdef DBUG_LTG_ETCD
-                DWARN("set error, http ret code: %d\n", curl_res);
-#endif
+                DWARN("http code: %d\n", curl_res);
                 goto *err_label;
         }
 
@@ -779,7 +779,7 @@ etcd_set_one (_etcd_session *session, const char *key, const char *value,
         if(CURLE_OK == curl_res )
         {
                 res = parse_http_code(retcode);
-#ifdef DBUG_LTG_ETCD
+#if ENABLE_ETCD_DBUG
         if (res != ETCD_OK)
         {
                 DWARN("set error, http ret code: %ld\n", retcode);
@@ -1275,9 +1275,12 @@ etcd_update_ttl_one (_etcd_session *session, const char *key,unsigned int ttl, e
                 curl_easy_setopt(curl,CURLOPT_POSTFIELDS,contents);
         }
 
+        etcd_auth_enable(curl);
+
         curl_res = curl_easy_perform(curl);
         if (curl_res != CURLE_OK) {
-                print_curl_error("perform",curl_res);
+                // print_curl_error("perform",curl_res);
+                DWARN("http code: %d\n", curl_res);
                 goto *err_label;
         }
 

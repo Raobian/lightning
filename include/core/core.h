@@ -24,6 +24,8 @@ typedef enum {
         VARIABLE_TIMER,
         VARIABLE_GETTIME,
         VARIABLE_ANALYSIS,
+        VARIABLE_LOADBALANCE,
+        VARIABLE_LATENCY,
 } variable_type_t;
 
 typedef int (*core_exec)(void *ctx, void *buf, int *count);
@@ -105,9 +107,23 @@ typedef struct __core {
         void *tls[LTG_TLS_MAX_KEEP];
 } core_t;
 
+#define CORE_DUMP_L(LEVEL, core) do { \
+        LEVEL("core %p name %s hash %d sche_idx %d flag %d\n", \
+              (core), \
+              (core)->name, \
+              (core)->hash, \
+              (core)->sche_idx, \
+              (core)->flag \
+              ); \
+} while(0)
+
+#define CORE_DUMP(core) CORE_DUMP_L(DBUG, core)
+
+
 //typedef void (*poller_t)(core_t *core, void *ctx);
 #define CORE_FLAG_PASV 0x0001
 #define CORE_FLAG_POLLING 0x0002
+#define CORE_FLAG_NET 0x0004
 
 int core_init(uint64_t mask, int flag);
 int core_usedby(uint64_t mask, int idx);
@@ -139,7 +155,8 @@ int core_register_poller(const char *name, func2_t func, void *ctx);
 int core_register_routine(const char *name, func2_t func, void *ctx);
 int core_register_scan(const char *name, func2_t func, void *ctx);
 uint32_t get_io();
-int perf_init(int target_begin, int target_end);
+
+int core_event_init();
 
 #if 1
 void core_ring_queue(int coreid, ring_ctx_t *ctx,

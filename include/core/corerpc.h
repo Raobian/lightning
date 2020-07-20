@@ -63,6 +63,15 @@ int corerpc_postwait(const char *name, const coreid_t *coreid, const void *reque
 int corerpc_postwait1(const char *name, const coreid_t *coreid, const void *request,
                       int reqlen,  void *reply, int *replen,
                       int msg_type, int group, int timeout);
+int corerpc_postwait2(const char *name, const coreid_t *coreid,
+                      const void *request, int reqlen,
+                      const ltgbuf_t *wbuf, ltgbuf_t *rbuf,
+                      uint64_t *latency, int msg_type, int msg_size,
+                      int group, int timeout);
+int corerpc_postwait_sock(const char *name, const coreid_t *coreid,
+                          const sockid_t *sockid, const void *request,
+                          int reqlen, const ltgbuf_t *wbuf, ltgbuf_t *rbuf,
+                          int msg_type, int msg_size, int group, int timeout);
 
 void corerpc_reply(const sockid_t *sockid, const msgid_t *msgid, const void *_buf, int len);
 void corerpc_reply_buffer(const sockid_t *sockid, const msgid_t *msgid, ltgbuf_t *_buf);
@@ -70,6 +79,11 @@ void corerpc_reply_error(const sockid_t *sockid, const msgid_t *msgid, int _erro
 
 void corerpc_reply_rdma(void *ctx, void *arg);
 void corerpc_reply_tcp(void *ctx, void *arg);
+
+void corerpc_reply1(const sockid_t *sockid, const msgid_t *msgid,
+                    const void *_buf, int len, uint64_t latency);
+void corerpc_reply_buffer1(const sockid_t *sockid, const msgid_t *msgid,
+                           ltgbuf_t *buf, uint64_t latency);
 
 int corerpc_recv(void *ctx, void *buf, int *count);
 
@@ -83,7 +97,9 @@ void corerpc_destroy(rpc_table_t **_rpc_table);
 
 //rpc table
 int corerpc_init();
+
 #if ENABLE_RDMA
+
 void corerpc_rdma_reset(const sockid_t *sockid);
 int corerpc_rdma_recv_msg(void *_ctx, void *iov, int *_count);
 int corerpc_rdma_recv_data(void *_ctx, void *_msg_buf);

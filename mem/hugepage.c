@@ -6,11 +6,7 @@
 #include "ltg_utils.h"
 #include "core/core.h"
 
-typedef struct {
-        struct list_head list;
-        uint64_t phyaddr;
-        void *vaddr;
-} hugepage_t;
+#define IS_POWER_OF_2(x) (!((x)&((x)-1)))
 
 typedef struct {
         ltg_spinlock_t    lock;
@@ -21,52 +17,14 @@ typedef struct {
 
         int              hash;
         int              hugepage_count;
-
-        struct list_head hugepage_free_list;
-        uint32_t         hugepage_free_count;
-
-        hugepage_t       hgpages[0];
+        const struct mem_alloc *ops;
 } hugepage_head_t;
 
-static hugepage_head_t *__hugepage__;
+static hugepage_head_t *__hugepage__ = NULL;
 static __thread hugepage_head_t *__private_huge__ = NULL;
+static const struct mem_alloc *__posix_alloc__ = NULL;
 static int __use_huge__ = 0;
-
-static uint64_t __virt2phy(const void *virtaddr)
-{
-        int fd;
-        uint64_t page, physaddr;
-        unsigned long virt_pfn;
-        int page_size;
-        off_t offset;
-
-        /* standard page size */
-        page_size = 4096;
-
-        fd = open("/proc/self/pagemap", O_RDONLY);
-        if (fd < 0) {
-                exit(0);
-        }
-
-        virt_pfn = (unsigned long)virtaddr / page_size;
-        offset = sizeof(uint64_t) * virt_pfn;
-        if (lseek(fd, offset, SEEK_SET) == (off_t) -1) {
-                close(fd);
-                exit(0);
-        }
-
-        if (read(fd, &page, sizeof(uint64_t)) < 0) {
-                close(fd);
-                exit(0);
-        }
-
-        physaddr = ((page & 0x7fffffffffffffULL) * page_size)
-                + ((unsigned long)virtaddr % page_size);
-
-        close(fd);
-
-        return physaddr;
-}
+static int PRIVATE_HP_COUNT = 0;
 
 static void __hugepage_head_init(hugepage_head_t *head, void *mem, void *addr,
                                  int hp_count, int sockid)
@@ -82,7 +40,6 @@ static void __hugepage_head_init(hugepage_head_t *head, void *mem, void *addr,
 
         head->start_addr = addr + HUGEPAGE_SIZE;
         head->hugepage_count = hp_count;
-        INIT_LIST_HEAD(&head->hugepage_free_list);
 
         head->malloc_addr = mem;
         head->hash = -1;
@@ -91,19 +48,18 @@ static void __hugepage_head_init(hugepage_head_t *head, void *mem, void *addr,
         LTG_ASSERT(ret == 0);
 }
 
-static int __map_hugepages(void *addr, int map, int hp_count)
+static int __map_hugepages(void *addr, int hp_count)
 {
         int i, j, ret;
         char *map_ret;
         void *map_addr = addr;
         void *unmap_addr = addr;
 
-        if (!map)
-                return 0;
+        DINFO("hp_count %d\n", hp_count);
 
         for (i = 0; i < hp_count; i++) {
                 map_ret = mmap(map_addr, HUGEPAGE_SIZE, PROT_READ | PROT_WRITE,
-                                MAP_PRIVATE |MAP_FIXED|MAP_ANONYMOUS|0x40000 , -1, 0);
+                                MAP_HUGETLB|MAP_PRIVATE |MAP_FIXED|MAP_ANONYMOUS|0x40000 , -1, 0);
                 if (map_ret == MAP_FAILED) {
                         DINFO("mmap erro  %p %d %s\n", map_addr, hp_count, strerror(errno))
                                 ret = ENOMEM;
@@ -123,26 +79,17 @@ err_ret:
         return ret;
 }
 
-static void __hugepage_init(hugepage_t *hpage, void *addr, int sockid, int idx,
-                            int map)
+static void __hugepage_init(void *addr, int sockid)
 {
         unsigned long int  sock;
-        uint64_t phyaddr = 0;
 
-        (void) idx;
         
         if (sockid >= 0){
                 sock = 1 << sockid;
                 mbind(addr, HUGEPAGE_SIZE, MPOL_PREFERRED, &sock, 3, 0);
         }
 
-        if (map) {
-                memset(addr, 0x00, HUGEPAGE_SIZE);
-                phyaddr = __virt2phy(addr);
-        }
-
-        hpage->vaddr = addr;
-        hpage->phyaddr = phyaddr;
+        memset(addr, 0x00, HUGEPAGE_SIZE);
 
         return ;
 }
@@ -150,47 +97,49 @@ static void __hugepage_init(hugepage_t *hpage, void *addr, int sockid, int idx,
 void *hugepage_private_init(int hash, int sockid)
 {
         hugepage_head_t *head;
-        hugepage_t      *hpage;
-        void *addr = __hugepage__->private_hp_head[hash];
         int i ;
 
-        LTG_ASSERT(addr);
+        if (__hugepage__ == NULL)
+                return NULL;
+
+        void *addr = __hugepage__->private_hp_head[hash];
         
-        DINFO("hash %d beigin init private hugepage%p\n", hash, addr);
+        LTG_ASSERT(addr);
+
+        
+        DINFO("hash %d head addr %p\n", hash, addr);
         head = (hugepage_head_t *)addr;
 
         __hugepage_head_init(head, NULL, addr, PRIVATE_HP_COUNT, sockid);
 
         for (i = 0; i < PRIVATE_HP_COUNT; i++) {
                 addr += HUGEPAGE_SIZE;
-                hpage = &head->hgpages[i];
-                __hugepage_init(hpage, addr, sockid, i, __use_huge__);
-                list_add_tail(&hpage->list, &head->hugepage_free_list);
-                //hpage->head = head;
+                __hugepage_init(addr, sockid);
         }
 
         head->hash = hash;
+        head->ops = buddy_memalloc_reg();
 
-        DINFO("init private hugepage finish \n");
         __private_huge__ = head;
-
+        head->ops->init((void *)head + sizeof(*head), PRIVATE_HP_COUNT);
+ 
+        DINFO("init private hugepage finish \n");
         return head;
 }
 
-static void __hugepage_init_public(hugepage_head_t *head, void *public, int daemon, int use_huge)
+static void __hugepage_init_public(hugepage_head_t *head, void *public)
 {
-        hugepage_t *hpage;
         void *pos = public;
 
+        DINFO("hp_count %d\n", PUBLIC_HP_COUNT);
+
         for (int i = 0; i < PUBLIC_HP_COUNT; i++) {
-                hpage = &head->hgpages[i];
-                __hugepage_init(hpage, pos,  -1, i, daemon & use_huge);
-                list_add_tail(&hpage->list, &head->hugepage_free_list);
+                __hugepage_init(pos,  -1);
                 pos += HUGEPAGE_SIZE;
         }
 
         __hugepage__ = head;
-        __use_huge__ = use_huge;
+
 }
 
 static void __hugepage_init_private(hugepage_head_t *head, void *private)
@@ -206,12 +155,11 @@ static void __hugepage_init_private(hugepage_head_t *head, void *private)
                 head->private_hp_head[i] = pos;
                 pos += (PRIVATE_HP_COUNT  + 1) * HUGEPAGE_SIZE;
 
-                DINFO("core[%d] head 0x%p\n", i, pos);
-        
+                DINFO("core[%d] count %d head 0x%p\n", i, PRIVATE_HP_COUNT + 1, pos);
         }
 }
 
-int hugepage_init(int daemon, uint64_t coremask, int use_huge)
+int hugepage_init(int daemon, uint64_t coremask, int nr_hugepage)
 { 
         int ret, hp_count, poll_num = 0;
         size_t mem_size;
@@ -219,22 +167,45 @@ int hugepage_init(int daemon, uint64_t coremask, int use_huge)
         size_t align;
         hugepage_head_t *head;
 
+        if (nr_hugepage == 0 || daemon == 0) {
+                __posix_alloc__ = posix_memalloc_reg();
+                __posix_alloc__->init(NULL, 0);
+                return 0;
+        } else {
+                buddy_memalloc_reg();
+        }
+        
+        __use_huge__ = nr_hugepage;
+
+        if (!IS_POWER_OF_2(PRIVATE_HP_COUNT)) {
+                DERROR("private hp count error %d\n", nr_hugepage);
+                ret = EINVAL;
+                GOTO(err_ret, ret);
+        }
+
+        if (!IS_POWER_OF_2(PUBLIC_HP_COUNT)) {
+                DERROR("private hp count error %d\n", nr_hugepage);
+                ret = EINVAL;
+                GOTO(err_ret, ret);
+        }
+
         static_assert(sizeof(*head) <= HUGEPAGE_SIZE, "hugepage");
+        PRIVATE_HP_COUNT = nr_hugepage;
         
         for (int i = 0; i < CORE_MAX; i++) {
                 if (core_usedby(coremask, i))
                         poll_num++;
         }
+
+
+        mem_size = ((LLU)PRIVATE_HP_COUNT + 1) * HUGEPAGE_SIZE * poll_num
+                       + (PUBLIC_HP_COUNT + 2) * HUGEPAGE_SIZE;
         
-        if (daemon) {
-                mem_size = ((LLU)PRIVATE_HP_COUNT  + 1) * HUGEPAGE_SIZE * poll_num
-                        + (PUBLIC_HP_COUNT + 2) * HUGEPAGE_SIZE;
-                hp_count = (PRIVATE_HP_COUNT  + 1) * poll_num 
-                        + PUBLIC_HP_COUNT + 1;
-        } else  {
-                mem_size = (PUBLIC_HP_COUNT + 2) * HUGEPAGE_SIZE;
-                hp_count = PUBLIC_HP_COUNT + 1;
-        }
+        hp_count = (PRIVATE_HP_COUNT + 1) * poll_num
+                + PUBLIC_HP_COUNT + 1;
+
+        DINFO("private_hp_count %d poll_num %d hp_count %d\n",
+              PRIVATE_HP_COUNT, poll_num, hp_count);
 
         mem = malloc(mem_size);
         if (mem == NULL) {
@@ -248,8 +219,8 @@ int hugepage_init(int daemon, uint64_t coremask, int use_huge)
                 addr = mem + HUGEPAGE_SIZE - align;
         } else
                 addr = mem;
-
-        ret = __map_hugepages(addr, daemon & use_huge, hp_count);
+        
+        ret = __map_hugepages(addr, hp_count);
         if (ret)
                 GOTO(err_ret, ret);
 
@@ -258,12 +229,12 @@ int hugepage_init(int daemon, uint64_t coremask, int use_huge)
         private = public + (PUBLIC_HP_COUNT) * HUGEPAGE_SIZE;
 
         __hugepage_head_init(head, mem, addr, hp_count - 1, -1);
+        __hugepage_init_public(head, public);
 
-        __hugepage_init_public(head, public, daemon, use_huge);
+        head->ops = posix_memalloc_reg();
+        head->ops->init((void *)head + sizeof(*head), PUBLIC_HP_COUNT);
 
-        if (daemon) {
-                __hugepage_init_private(head, private);
-        }
+        __hugepage_init_private(head, private);
 
         return 0;
 err_ret:
@@ -277,83 +248,40 @@ void private_hugepage_free(void *addr)
         return ;
 }
 
-#if ENABLE_HUGEPAGE
-static hugepage_t *__get_free_hugepage(hugepage_head_t *head)
+int hugepage_getfree(void **_addr, uint32_t *size)
 {
         int ret;
-        hugepage_t *hpage;
-        
-        if (unlikely(head == __hugepage__)) {
-                ret = ltg_spin_lock(&head->lock);
-                LTG_ASSERT(ret == 0);
-                
-                hpage = list_entry(head->hugepage_free_list.next, hugepage_t, list);        
-                list_del(&hpage->list);
-
-                ltg_spin_unlock(&head->lock);
-        } else {
-                hpage = list_entry(head->hugepage_free_list.next, hugepage_t, list);        
-                list_del(&hpage->list);
-        }
-
-        return hpage;       
-}
-
-int hugepage_getfree(void **_addr, uint64_t *phyaddr)
-{
-        int ret;
-        hugepage_t *hpage;
         hugepage_head_t *head = __private_huge__ ? __private_huge__ : __hugepage__;
 
-        if (unlikely(list_empty(&head->hugepage_free_list))) {
-                UNIMPLEMENTED(__DUMP__);
-                ret = ENOMEM;
-                GOTO(err_ret, ret);
-        }
+        if (*size % HUGEPAGE_SIZE)
+                return EINVAL;
 
-        core_t *core = core_self();
-        if (likely(core)) {
-                DINFO("%s[%d] hugepage getfree\n", core->name, core->hash);
+        if (unlikely(head == NULL)) {
+                ret = __posix_alloc__->alloc(NULL, _addr, size);
+                if (ret)
+                        GOTO(err_ret, ret);
         } else {
-                DINFO("none[-1] hugepage getfree\n");
+                if (unlikely(head == __hugepage__))
+                        ltg_spin_lock(&head->lock);
+
+                ret = head->ops->alloc((void *)head + sizeof(*head), _addr, size);
+                if (ret)
+                        GOTO(err_ret, ret);
+
+                if (unlikely(head == __hugepage__))
+                        ltg_spin_unlock(&head->lock);
         }
-        
-        hpage = __get_free_hugepage(head);
 
-        if (phyaddr)
-                *phyaddr = hpage->phyaddr;
-
-        *_addr = hpage->vaddr;
-        
         return 0;
 err_ret:
         return ret;
 }
 
-#else
-
-int hugepage_getfree(void **_addr, uint64_t *phyaddr)
-{
-        int ret;
-        void *addr;
-
-        DINFO("fake hugepage_getfree\n");
-        
-        ret = ltg_malign((void **)&addr, PAGE_SIZE, HUGEPAGE_SIZE);
-        if (ret)
-                UNIMPLEMENTED(__DUMP__);
-
-        *_addr = addr;
-        if (phyaddr) {
-                *phyaddr = (uint64_t)addr;
-        }
-        
-        return 0;
-}
-#endif
-
 void get_global_private_mem(void **private_mem, uint64_t *private_mem_size)
 {
+        if (__hugepage__ == NULL)
+                return ;
+
         *private_mem = __hugepage__->start_addr;
         *private_mem_size = ((uint64_t)__hugepage__->hugepage_count) * HUGEPAGE_SIZE;
 }

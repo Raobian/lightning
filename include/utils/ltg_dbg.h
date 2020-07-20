@@ -13,10 +13,11 @@
 #include <syslog.h>
 #include <errno.h>
 #include <unistd.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 
 #include "ltg_log.h"
 #include "dbg_proto.h"
-#include "dbg_message.h"
 #include "ltg_conf.h"
 
 /* for gettime, localtime_safe etc */
@@ -55,6 +56,12 @@ void dbg_info(int on);
 void dbg_goto(int on);
 void dbg_bug(int on);
 void dbg_level(int level);
+
+#define ERRNO_KEEP_SYSTEM 256
+#define ERRNO_KEEP_LTG 256
+
+const char *ltg_strerror(int errno);
+int ltg_errno_set(int idx, const char *_str);
 
 #if defined(CMAKE_SOURCE_PATH_SIZE)
 
@@ -108,7 +115,7 @@ void  __attribute__((noinline)) dbg_log_write(const int logtype, const int size,
 #define LTG_ASSERT(exp)                                                \
         do {                                                            \
                 if (unlikely(!(exp))) {                                 \
-                        DERROR("!!!!!!!!!!assert fail!!!!!!!!!!!!!!!\n"); \
+                        DERROR("!!!!!!!!!!assert fail, coredump:%d\n", ltgconf_global.coredump); \
                         if (ltgconf_global.coredump) {                         \
                                 abort();                                \
                         } else {                                        \
@@ -151,12 +158,13 @@ extern uint32_t utils_loglevel;
 extern uint32_t utils_dbg;
 extern uint32_t utils_sub;
 
+void closecoredump();
 #define FATAL_RETVAL 255
 
 #define EXIT(__ret__)                             \
         do {       					\
 		rdma_running = 0;                               \
-		sleep(1);					\
+                closecoredump();                                \
                 DWARN("exit worker (%u) %s\n", __ret__, strerror(__ret__)); \
                 exit(__ret__);                                          \
         } while (0)
@@ -179,8 +187,8 @@ extern uint32_t utils_sub;
 #endif
 
 int dmsg_init();
-int dmsg_init_sub(const char *path, const char *value,
-                  int (*callback)(const char *buf, uint32_t flag),
-                  uint32_t flag);
-
+int dmsg_init_sub(const char *name, uint32_t flag);
+int dmsg_init_misc(const char *name, const char *value,
+                   int (*callback)(const char *buf, uint32_t flag),
+                   uint32_t flag);
 #endif

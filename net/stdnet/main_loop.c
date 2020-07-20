@@ -77,6 +77,27 @@ err_ret:
  * @param _args
  * @return
  */
+
+#if 0
+typedef struct {
+        int fd;
+} __ctx_t;
+
+static void __main_loop_close_task(void *_ctx)
+{
+        __ctx_t *ctx = _ctx;
+        net_handle_t nh;
+
+        nh.u.type = 
+
+        sdevent_close();
+
+        ltg_free((void **)&_ctx);
+}
+
+#endif
+
+
 STATIC void *__main_loop_worker(void *_args)
 {
         int ret, nfds;
@@ -93,7 +114,9 @@ STATIC void *__main_loop_worker(void *_args)
 
         sem_post(&worker->sem);
 
-        main_loop_hold();        
+#if 0
+        main_loop_hold();
+#endif
 
         while (1) {
                 DBUG("running thread %u, epoll_fd %u, eventfd %u\n",

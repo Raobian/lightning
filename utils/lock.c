@@ -75,7 +75,7 @@ int ltg_rwlock_destroy(ltg_rwlock_t *rwlock)
         lock_wait_t *lock_wait = NULL;
         struct list_head list, *pos, *n;
 
-        DWARN("destroy %p\n", rwlock);
+        //DWARN("destroy %p\n", rwlock);
 
         INIT_LIST_HEAD(&list);
         ret = ltg_spin_lock(&rwlock->spin);
@@ -147,7 +147,7 @@ STATIC int __ltg_rwlock_trylock0(ltg_rwlock_t *rwlock, char type)
                         goto err_ret;
         } else {
                 ret = EBUSY;
-                GOTO(err_ret, ret);
+                goto err_ret;
         }
 
         return 0;
@@ -262,8 +262,6 @@ STATIC int __ltg_rwlock_lock(ltg_rwlock_t *rwlock, char type, int tmo)
                 LTG_ASSERT(sche_status() != SCHEDULE_STATUS_IDLE);
         }
         
-        ANALYSIS_BEGIN(0);
-
         ret = __ltg_rwlock_trylock0(rwlock, type);
         if (likely(ret == 0)) {
                 goto success;
@@ -323,8 +321,6 @@ retry:
         }
 
 success:
-        ANALYSIS_END(0, 1000 * 50, NULL);
-
         return 0;
 err_lock:
         ltg_spin_unlock(&rwlock->spin);

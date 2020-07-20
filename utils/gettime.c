@@ -6,7 +6,6 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <sys/vfs.h>
-#include <ustat.h>
 #include <sys/socket.h>
 #include <sys/sendfile.h>
 #include <unistd.h>
@@ -26,7 +25,7 @@ typedef struct {
         uint32_t cycle;
 } gettime_t;
 
-#define GETTIME_CYCLE 10
+#define GETTIME_CYCLE 100
 #define GETTIME_CYCLE_PRINT 100000000
 
 void IO_FUNC gettime_refresh(void *ctx)
@@ -39,7 +38,7 @@ void IO_FUNC gettime_refresh(void *ctx)
                 gettimeofday(&gettime->tv, NULL);
         }
 
-        if (gettime->cycle % GETTIME_CYCLE_PRINT == 0) {
+        if (unlikely(gettime->cycle % GETTIME_CYCLE_PRINT == 0)) {
                 DBUG("gettime cycle\n");
         }
 }

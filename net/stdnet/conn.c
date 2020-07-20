@@ -23,13 +23,12 @@ static int __conn_add(const nid_t *nid)
         size_t len;
 
         if (netable_connected(nid)) {
-                netable_update(nid);
                 goto out;
         }
 
         snprintf(key, MAX_NAME_LEN, "%u.info", nid->id);
 
-        ret = etcd_get_text(ETCD_BANET, key, tmp, NULL);
+        ret = etcd_get_text(ETCD_MANAGE, key, tmp, NULL);
         if (ret) {
                 goto out;
         }
@@ -39,11 +38,11 @@ static int __conn_add(const nid_t *nid)
         ret = urlsafe_b64_decode(tmp, strlen(tmp), (void *)info, &len);
         LTG_ASSERT(ret == 0);        
 
-        DINFO("connect to %u %s\n", nid->id, info->name);
+        DBUG("connect to %u %s\n", nid->id, info->name);
 
-        ret = netable_connect_info(&nh, info, 1);
+        ret = netable_connect(&nh, info);
         if (ret) {
-                DINFO("connect to %u %s fail\n", nid->id, info->name);
+                DBUG("connect to %u %s fail\n", nid->id, info->name);
                 GOTO(err_ret, ret);
         }
 
@@ -54,13 +53,13 @@ err_ret:
         return ret;
 }
 
-static int __conn_scan__()
+int conn_scan()
 {
         int ret, i;
         etcd_node_t *list = NULL, *node;
         nid_t nid;
 
-        ret = etcd_list(ETCD_BANET, &list);
+        ret = etcd_list(ETCD_MANAGE, &list);
         if (unlikely(ret)) {
                 if (ret == ENOKEY) {
                         DINFO("conn table empty\n");
@@ -89,13 +88,45 @@ err_ret:
         return ret;
 }
 
+inline static int __conn_watch(int idx, void *arg)
+{
+        int ret;
+        
+        (void) arg;
+
+        static int __idx__ = 0;
+        if (__idx__ < idx) {
+                __idx__ = idx;
+                DINFO("new conn idx %d\n", idx);
+        }
+        
+        ret = conn_scan();
+        if (ret) {
+                GOTO(err_ret, ret);
+        }
+
+        return 0;
+err_ret:
+        return ret;
+}
+
 static void *__conn_scan(void *arg)
 {
         (void) arg;
-        
+
         while (1) {
-                sleep(ltgconf_global.rpc_timeout / 2);
-                __conn_scan__();
+#if 1
+                int ret;
+
+                ret = etcd_watch_dir(ETCD_NETWORK, "manage", 60,
+                                     __conn_watch, NULL);
+                if (unlikely(ret)) {
+                        continue;
+                }
+#else
+                sleep(10);
+                conn_scan();
+#endif
         }
 
         pthread_exit(NULL);
@@ -141,9 +172,9 @@ static int __conn_init_info(nid_t *_nid)
 
 retry:
         DBUG("register %s value %s\n", key, tmp);
-        ret = etcd_create_text(ETCD_BANET, key, tmp, 0);
+        ret = etcd_create_text(ETCD_MANAGE, key, tmp, 0);
         if (unlikely(ret)) {
-                ret = etcd_update_text(ETCD_BANET, key, tmp, NULL, 0);
+                ret = etcd_update_text(ETCD_MANAGE, key, tmp, NULL, 0);
                 if (unlikely(ret)) {
                         USLEEP_RETRY(err_ret, ret, retry, retry, 30, (1000 * 1000));
                 }
@@ -177,7 +208,7 @@ int conn_getinfo(const nid_t *nid, ltg_net_info_t *info)
         size_t  len;
 
         snprintf(key, MAX_NAME_LEN, "%u.info", nid->id);
-        ret = etcd_get_text(ETCD_BANET, key, tmp, NULL);
+        ret = etcd_get_text(ETCD_MANAGE, key, tmp, NULL);
         if (unlikely(ret))
                 GOTO(err_ret, ret);
 

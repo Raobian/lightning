@@ -1,25 +1,23 @@
 project (lightning)
 
-option(release "Release Mode" ON)
-
 cmake_minimum_required(VERSION 2.8)
-set(CMAKE_VERBOSE_MAKEFILE )
+
+set(CMAKE_VERBOSE_MAKEFILE OFF)
+
+set(CMAKE_C_FLAGS "-std=gnu99 -W -Wall -fPIC -Werror -Wno-array-bounds -Wno-restrict -Wno-implicit-fallthrough -Werror=return-type -Wno-stringop-truncation -Wno-format-truncation -Wno-format-overflow -Wno-stringop-overflow -Wno-misleading-indentation -Wno-deprecated-declarations -Wno-cast-function-type -Wno-int-in-bool-context -Wno-pointer-compare -D_GNU_SOURCE -D_REENTRANT -D_FILE_OFFSET_BITS=64 -fms-extensions")
+
+SET(CMAKE_C_FLAGS_DEBUG          "$ENV{CFLAGS} -O0 -g -ggdb")
+SET(CMAKE_C_FLAGS_RELEASE        "$ENV{CFLAGS} -O3 -g -ggdb")
+SET(CMAKE_C_FLAGS_RELWITHDEBINFO "$ENV{CFLAGS} -O3 -g -ggdb")
+SET(CMAKE_C_FLAGS_MINSIZEREL     "$ENV{CFLAGS} -O3 -g -ggdb")
+
+message("***************Build for ${CMAKE_BUILD_TYPE}***************")
 
 #set(CMAKE_INSTALL_PREFIX "/usr/local/lightning")
 
 execute_process(COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/get_version.sh ${CMAKE_CURRENT_SOURCE_DIR})
 
-set(CMAKE_C_FLAGS "-W -Wall -DDEBUG -g -fPIC -Werror -Wno-array-bounds -Wno-implicit-fallthrough -Werror=return-type -Wno-format-truncation -Wno-format-overflow -Wno-stringop-overflow -Wno-misleading-indentation -Wno-deprecated-declarations -Wno-cast-function-type -Wno-int-in-bool-context -Wno-pointer-compare -D_GNU_SOURCE -D_REENTRANT -D_FILE_OFFSET_BITS=64 -std=gnu99 -fms-extensions -gsplit-dwarf")
-
-set(CMAKE_C_LIBS lightning pthread crypt crypto uuid ssl isal z m curl yajl rdmacm yaml numa ibverbs)
-
-if(${release} STREQUAL "ON")
-    message("lightning: Build for release.")
-
-    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3")
-else()
-    message("lightning: Build for debug.")
-endif()
+set(CMAKE_C_LIBS lightning pthread uuid m curl yajl rdmacm yaml numa ibverbs)
 
 message("lightning: install directory ${CMAKE_INSTALL_PREFIX}, use -D CMAKE_INSTALL_PREFIX=<dir> replace it")
 
@@ -27,7 +25,22 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+if(${CMAKE_BUILD_TYPE} STREQUAL DEBUG)
+  message("***************Build for debug***************")
+  set(LTG_CMAKE_DEBUG 1)
+else()
+  set(LTG_CMAKE_DEBUG 0)
+endif()
+
+configure_file (
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/ltg_cmake.h.ini"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/ltg_cmake.h"
+)
+
+
 add_library(lightning STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/plock.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/gettime_tsc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/3part/crc32.c
     ${CMAKE_CURRENT_SOURCE_DIR}/3part/hash.c
     ${CMAKE_CURRENT_SOURCE_DIR}/3part/libringbuf.c
@@ -47,7 +60,10 @@ add_library(lightning STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/etcd.c
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/gettime.c
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/fnotify.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/ltg_errno.c
 
+    ${CMAKE_CURRENT_SOURCE_DIR}/mem/huge_posix.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/mem/huge_buddy.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mem/malloc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mem/mem_ring.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mem/hugepage.c
@@ -73,6 +89,7 @@ add_library(lightning STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/net/stdnet/net_lib.c
     ${CMAKE_CURRENT_SOURCE_DIR}/net/stdnet/net_table.c
     ${CMAKE_CURRENT_SOURCE_DIR}/net/stdnet/heartbeat.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/net/stdnet/heartbeat1.c
     ${CMAKE_CURRENT_SOURCE_DIR}/net/stdnet/xnect.c
     ${CMAKE_CURRENT_SOURCE_DIR}/net/stdnet/main_loop.c
 
@@ -81,6 +98,7 @@ add_library(lightning STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/net/corenet/corenet_tcp.c
     ${CMAKE_CURRENT_SOURCE_DIR}/net/corenet/corenet_connect_tcp.c
     ${CMAKE_CURRENT_SOURCE_DIR}/net/corenet/corenet_maping.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/net/corenet/corenet_hb.c
     ${CMAKE_CURRENT_SOURCE_DIR}/net/corenet/rdma_event.c
     ${CMAKE_CURRENT_SOURCE_DIR}/net/corenet/corenet.c
 
@@ -106,6 +124,7 @@ add_library(lightning STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/core/sche_task.c
     ${CMAKE_CURRENT_SOURCE_DIR}/core/sche_thread.c
     ${CMAKE_CURRENT_SOURCE_DIR}/core/ltg.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/core_event.c
 )
 
 install(TARGETS lightning ARCHIVE DESTINATION lib)

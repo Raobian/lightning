@@ -81,19 +81,21 @@ int sock_info2sock(net_handle_t *nh, const sock_info_t *info, int nonblock, int 
         int ret;
         struct sockaddr_in sin;
 
+        LTG_ASSERT(timeout <= 1000 * 1000 && timeout >= 100 * 1000);
+        
         memset(&sin, 0, sizeof(sin));
         sin.sin_family = AF_INET;
 
         sin.sin_addr.s_addr = info->addr;
         sin.sin_port = info->port;
 
-        DINFO("try to connect %s:%u/%u\n", inet_ntoa(sin.sin_addr),
+        DBUG("try to connect %s:%u/%u\n", inet_ntoa(sin.sin_addr),
               ntohs(info->port), info->port);
 
         nh->u.sd.sd = -1;
         ret = tcp_sock_connect(nh, &sin, nonblock, timeout, 1);
         if (unlikely(ret)) {
-                DWARN("try to connect %s:%u/%u (%u) %s\n", inet_ntoa(sin.sin_addr),
+                DBUG("try to connect %s:%u/%u (%u) %s\n", inet_ntoa(sin.sin_addr),
                       ntohs(info->port), info->port, ret, strerror(ret));
                 GOTO(err_ret, ret);
         }

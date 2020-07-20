@@ -23,25 +23,23 @@ typedef struct {
         int coredump;
         int restart;
         int rdma;
-        int testing;
-        int maxcore;
+        int numa;
         int rpc_timeout;
         int backtrace;
         int coreflag;
 
         int polling_timeout;
         uint64_t coremask;
-        int use_huge;
+        int nr_hugepage;
         int daemon;
         
         int wmem_max;
         int rmem_max;
         int solomode;
         int performance_analysis;
-        int lease_timeout;
+        int nofile_max;
         int hb_timeout;
         int hb_retry;
-        int tcp_discovery;
 } ltgconf_t;
 
 extern ltgconf_t ltgconf_global;

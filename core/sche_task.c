@@ -123,6 +123,7 @@ static void __sche_task_sleep(task_t *task)
         taskctx = &sche->tasks[task->taskid];
         LTG_ASSERT(taskctx->sleeping == 0);
         taskctx->sleeping = 1;
+        taskctx->sleep = 1;
 }
 
 static void __sche_task_wakeup(task_t *task)
@@ -145,7 +146,7 @@ void sche_task_reset()
         LTG_ASSERT(sche->running_task != -1);
         taskctx = &sche->tasks[sche->running_task];
         LTG_ASSERT(taskctx->state == TASK_STAT_RUNNING);
-        LTG_ASSERT(taskctx->pre_yield == 1);
+        //LTG_ASSERT(taskctx->pre_yield == 1);
         taskctx->pre_yield = 0;
 }
 
@@ -347,8 +348,7 @@ static void IO_FUNC __sche_trampoline(taskctx_t *taskctx)
 {
         sche_t *sche = taskctx->sche;
 #if SCHEDULE_TASKCTX_RUNTIME
-        struct timeval now;
-        uint64_t used;
+        uint64_t used, now;
 #endif
 
         //ANALYSIS_BEGIN(0);
@@ -359,9 +359,6 @@ static void IO_FUNC __sche_trampoline(taskctx_t *taskctx)
         DBUG("start task[%u] %s\n", taskctx->id, taskctx->name);
 #endif
 
-#if SCHEDULE_CHECK_RUNTIME
-        _gettimeofday(&taskctx->rtime, NULL);
-#endif
         LTG_ASSERT(sche->running_task != -1);
 
         taskctx->func(taskctx->arg);
@@ -373,9 +370,11 @@ static void IO_FUNC __sche_trampoline(taskctx_t *taskctx)
 #endif
 
 #if SCHEDULE_TASKCTX_RUNTIME
-        _gettimeofday(&now, NULL);
-        used = _time_used(&taskctx->ctime, &now);
-        sche->c_runtime += used;
+	if (likely(taskctx->sleep == 0)) {
+		now = get_rdtsc();
+		used = now - taskctx->ctime;
+		sche->c_runtime += used;
+	}
 #else
         sche->task_count--;
 #endif
@@ -463,9 +462,11 @@ static void *__sche_task_new(sche_t *sche)
 
         if (core_self() && ltgconf_global.daemon && ENABLE_HUGEPAGE){
                 if (sche->task_hpage == NULL) {
-                        int ret = hugepage_getfree((void **)&vaddr, NULL);
+                        uint32_t size = HUGEPAGE_SIZE;
+                        int ret = hugepage_getfree((void **)&vaddr, &size);
                         LTG_ASSERT(ret == 0);
-                        
+                        LTG_ASSERT(size == HUGEPAGE_SIZE);
+
                         sche->task_hpage = vaddr;
                         sche->task_hpage_offset = 0;
 
@@ -495,9 +496,9 @@ static void *__sche_task_new(sche_t *sche)
         return stack;
 }
 
-void IO_FUNC sche_task_new(const char *name, func_t func, void *arg, int _group)
+int IO_FUNC sche_task_new(const char *name, func_t func, void *arg, int _group)
 {
-        int ret, idx = 0, group;
+        int ret, group;
         sche_t *sche = sche_self();
         taskctx_t *taskctx;
 
@@ -535,6 +536,7 @@ void IO_FUNC sche_task_new(const char *name, func_t func, void *arg, int _group)
         taskctx->sleeping = 0;
         taskctx->wait_begin = 0;
         taskctx->wait_tmo = 0;
+        taskctx->sleep = 0;
         taskctx->sche = sche;
         taskctx->group = group;
         sche->task_count++;
@@ -546,17 +548,19 @@ void IO_FUNC sche_task_new(const char *name, func_t func, void *arg, int _group)
         taskctx->ref_count = 0;
 #endif
 
-        DBUG("new task[%d] %s count:%d\n", idx, name, sche->task_count);
+        DBUG("new task[%d] %s count:%d\n", taskctx->id, name, sche->task_count);
 
         sche_fingerprint_new(sche, taskctx);
-#ifdef SCHEDULE_TASKCTX_RUNTIME
-        gettimeofday(&taskctx->ctime, NULL);
+#if SCHEDULE_TASKCTX_RUNTIME
+        taskctx->ctime = get_rdtsc();
 #else
         _gettimeofday(&taskctx->ctime, NULL);
 #endif
         count_list_add_tail(&taskctx->hook, &sche->runable[taskctx->group]);
 
         __sche_makecontext(sche, taskctx);
+
+        return taskctx->id;
 }
 
 #define REQUEST_SEM 1

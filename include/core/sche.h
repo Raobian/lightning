@@ -26,9 +26,7 @@
 #define ENABLE_SCHEDULE_SELF_DEBUG 1
 #define ENABLE_SCHEDULE_STACK_ASSERT 0
 
-#define SCHEDULE_CHECK_RUNTIME ENABLE_SCHEDULE_CHECK_RUNTIME
-#define SCHEDULE_TASKCTX_RUNTIME 1
-#define SCHEDULE_TASKCTX_IOTIME 1
+// #define SCHEDULE_TASKCTX_RUNTIME 1
 #define SCHEDULE_CHECK_IOPS 0
 
 #define TASK_MAX (4096)
@@ -41,7 +39,7 @@
 #define SCHE_NAME_LEN 32
 
 #define KEEP_STACK_SIZE (1024)
-#define DEFAULT_STACK_SIZE (1024 * 512)
+#define DEFAULT_STACK_SIZE (1024 * 128)
 
 #if 1
 #define NEW_SCHED
@@ -109,9 +107,12 @@ typedef struct __task {
 
         char name[MAX_NAME_LEN];
         int id;
-        struct timeval ctime; /*create time*/
 #if SCHEDULE_TASKCTX_RUNTIME
-        struct timeval rtime; /*running time*/
+        uint64_t ctime; /*live time*/
+        uint64_t rtime; /*running time*/
+#else
+        struct timeval rtime; /*live time*/
+        struct timeval ctime; /*live time*/
 #endif
 
 #if ENABLE_SCHEDULE_LOCK_CHECK
@@ -140,7 +141,7 @@ typedef struct __task {
         const char *wait_name;
         const void *wait_opaque;
         int32_t retval;
-
+        int sleep;
         // last member?
 } taskctx_t;
 
@@ -199,7 +200,7 @@ typedef struct sche_t {
         struct timeval t1, t2;
         uint64_t nr_run1, nr_run2;
 #endif
-
+        uint64_t hz;
         // scher status
         int eventfd;
         int running;
@@ -270,7 +271,7 @@ int sche_stat(int *sid, int *taskid, int *runable, int *wait_task,
 
 
 int sche_request(sche_t *sche, int group, func_t exec, void *buf, const char *name);
-void sche_task_new(const char *name, func_t func, void *arg, int group);
+int sche_task_new(const char *name, func_t func, void *arg, int group);
 task_t sche_task_get();
 void sche_task_given(task_t *task);
 int sche_task_get1(sche_t *sche, task_t *task);
@@ -339,35 +340,7 @@ void sche_fingerprint_new(sche_t *sche, taskctx_t *taskctx);
 
 int sche_task_run(int group, func_va_t exec, ...);
 int sche_getid();
-
-#if 1
-
-# define SCHEDULE_LEASE_SET()                          \
-        do {                                                            \
-                sche_value_set(TASK_VALUE_LEASE, gettime());        \
-        } while (0)
-
-# define SCHEDULE_LEASE_CHECK(label, __ret__)                           \
-        do {                                                            \
-                uint32_t __lease__, diff; \
-                sche_value_get(TASK_VALUE_LEASE, &__lease__);       \
-                LTG_ASSERT(__lease__);                                     \
-                diff = gettime() - __lease__;                          \
-                if (__lease__!= -1 && diff > ltgconf_global.lease_timeout) {   \
-                        __ret__ = ETIMEDOUT;                            \
-                        DERROR("Process leaving via %s ret %d lease %u timeout %u %u\n", \
-                               #label, __ret__, __lease__, ltgconf_global.lease_timeout, diff); \
-                        goto label;                                     \
-                }                                                       \
-        } while (0)
-
-
-#else
-
-# define SCHEDULE_LEASE_SET()
-# define SCHEDULE_LEASE_CHECK(label, __ret__)
-
-#endif
+void sche_unyielding(int unyielding);
 
 #define SCHE_ANALYSIS 0
 

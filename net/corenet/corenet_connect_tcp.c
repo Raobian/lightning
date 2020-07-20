@@ -53,13 +53,13 @@ int corenet_tcp_connect(const coreid_t *coreid, uint32_t addr, uint32_t port,
         sin.sin_addr.s_addr = addr;
         sin.sin_port = port;
 
-        DINFO("connect %s:%u\n", inet_ntoa(sin.sin_addr), ntohs(port));
+        DBUG("connect %s:%u\n", inet_ntoa(sin.sin_addr), ntohs(port));
 
         ret = core_getid(&msg.from);
         if (unlikely(ret))
                 GOTO(err_ret, ret);
 
-        ret = tcp_sock_connect(&nh, &sin, 0, 3, 0);
+        ret = tcp_sock_connect(&nh, &sin, 0, 100 * 1000, 0);
         if (unlikely(ret)) {
                 DINFO("try to connect %s:%u (%u) %s\n", inet_ntoa(sin.sin_addr),
                       ntohs(port), ret, strerror(ret));
@@ -114,7 +114,7 @@ STATIC void *__corenet_tcp_accept__(void *arg)
 
         sockid = &ctx->sockid;
 
-        DINFO("accept from %s, sd %d\n",  _inet_ntoa(sockid->addr), sockid->sd);
+        DBUG("accept from %s, sd %d\n",  _inet_ntoa(sockid->addr), sockid->sd);
 
         ret = sock_poll_sd(sockid->sd, 1000 * 1000, POLLIN);
         if (unlikely(ret))
@@ -150,11 +150,11 @@ STATIC void *__corenet_tcp_accept__(void *arg)
         core = core_get(msg->to.idx);
         ctx->coreid = msg->from;
 
-        DINFO("core[%d] %p maping:%p, sd %u\n", msg->to.idx, core,
+        DBUG("core[%d] %p maping:%p, sd %u\n", msg->to.idx, core,
               core->maping, sockid->sd);
 
-        ret = corenet_attach(core->corenet, sockid, ctx, corerpc_recv,
-                             corerpc_close, NULL, NULL, netable_rname(&ctx->coreid.nid));
+        ret = corenet_tcp_attach(msg->to.idx, sockid, ctx, corerpc_recv,
+                                 corerpc_close, NULL, NULL, netable_rname(&ctx->coreid.nid));
         if (unlikely(ret))
                 UNIMPLEMENTED(__DUMP__);
 
@@ -222,7 +222,7 @@ static void *__corenet_tcp_passive(void *_arg)
                                 GOTO(err_ret, ret);
                 }
 
-                DINFO("got new event\n");
+                DBUG("got new event\n");
 
                 __corenet_tcp_accept(corenet_tcp);
         }

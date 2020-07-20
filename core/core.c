@@ -14,7 +14,6 @@
 #include "ltg_net.h"
 #include "ltg_utils.h"
 #include "ltg_core.h"
-#include "ltg_core.h"
 #include "ltg_net.h"
 
 static core_t *__core_array__[256];
@@ -80,7 +79,7 @@ STATIC void *__core_check_health__(void *_arg)
                                 continue;
 
                         //int tmo = core->flag & CORE_FLAG_POLLING ? 3 : 10;
-                        int tmo = 10;
+                        int tmo = 60;
 
                         if (unlikely(now - core->keepalive > tmo)) {
                                 DERROR("polling core[%d] block !!!!!\n", core->hash);
@@ -102,19 +101,44 @@ static void IO_FUNC core_stat(core_t *core)
         _gettimeofday(&core->stat_t2, NULL);
         uint64_t used = _time_used(&core->stat_t1, &core->stat_t2);
         if (used > 0) {
+
+#if !SCHEDULE_TASKCTX_RUNTIME
                 DINFO("%s[%d] "
                       "pps:%jd "
-                      "task:%u/%u/%u/%u "
+                      "task:%u/%u/%u "
                       "ring:%u "
                       "counter:%ju "
                       "cpu %ju \n",
                       core->name, core->hash,
                       (core->stat_nr2 - core->stat_nr1) * 1000000 / used,
-                      core->sche->task_count, task_used, task_wait, task_runable,
+                      task_used, task_wait, task_runable,
                       ring_count,
                       core->sche->counter / (core->stat_nr2 - core->stat_nr1),
                       (run_time * 100)/ used);
+#else
+                uint64_t avg_task_count, avg_task_runtime, avg_lat;
+                (void)ring_count;
+                avg_task_count = c_runtime / used;
+                if (task_used == 0) {
+                        avg_task_runtime = 0;
+                        avg_lat = 0;
+                } else {
+                        avg_task_runtime = run_time / task_used;
+                        avg_lat = c_runtime  / task_used;
+                }
 
+                DINFO("%s[%d] "
+                      "pps:%jd "
+                      "task:%lu/%lu/%lu "
+                      "task count %lu used %lu c_run_time %lu "
+                      "cpu %ju\n",
+                      core->name, core->hash,
+                      (core->stat_nr2 - core->stat_nr1) * 1000000 / used,
+                      avg_task_count, avg_task_runtime, avg_lat,
+                      task_used, used,c_runtime, 
+                      (run_time * 100) / used 
+                );
+#endif
                 core->stat_t1 = core->stat_t2;
                 core->stat_nr1 = core->stat_nr2;
                 core->sche->counter = 0;
@@ -171,6 +195,7 @@ void IO_FUNC core_worker_run(core_t *core)
 
 #if ENABLE_ANALYSIS
         analysis_merge(core);
+#else
 #endif
 
 #if SCHE_ANALYSIS
@@ -232,9 +257,9 @@ static int __core_worker_init(core_t *core)
                 ret = timer_init(1);
                 if (unlikely(ret))
                         GOTO(err_ret, ret);
-        }
 
-        DINFO("%s[%u] timer inited\n", core->name, core->hash);
+                DINFO("%s[%u] timer inited\n", core->name, core->hash);
+        }
 
         ret = gettime_private_init();
         if (unlikely(ret))
@@ -273,6 +298,8 @@ static int __core_worker_init(core_t *core)
 
         //core_register_tls(VARIABLE_CORE, private_mem);
 
+        DINFO("%s[%d] inited\n", core->name, core->hash);
+        
         sem_post(&core->sem);
 
         return 0;
@@ -285,7 +312,7 @@ static void * IO_FUNC __core_worker(void *_args)
         int ret;
         core_t *core = _args;
 
-        DINFO("start %s idx %d\n", core->name, core->hash);
+        DINFO("%s[%d] init\n", core->name, core->hash);
 
         ret = __core_worker_init(core);
         if (unlikely(ret))
@@ -337,7 +364,9 @@ static int __core_create(core_t **_core, const char *name, int hash, int flag)
         if (unlikely(ret))
                 UNIMPLEMENTED(__DUMP__);
 
-        ret = ltg_thread_create(__core_worker, core, "__core_worker");
+        char tname[MAX_NAME_LEN];
+        snprintf(tname, sizeof(tname), "%s[%u]", core->name, core->hash);
+        ret = ltg_thread_create(__core_worker, core, tname);
         if (ret == -1) {
                 ret = errno;
                 GOTO(err_free, ret);
@@ -359,8 +388,7 @@ int core_init(uint64_t mask, int flag)
 
         if (mask == 0) {
                 LTG_ASSERT(ltgconf_global.polling_timeout || ltgconf_global.daemon);
-                flag = flag ^ CORE_FLAG_POLLING;
-
+                //flag = flag ^ CORE_FLAG_POLLING;
                 //mask = (LLU)1 << (CORE_MAX - 1);
                 mask = 1;
                 DINFO("set coremask default\n");
@@ -375,7 +403,7 @@ int core_init(uint64_t mask, int flag)
 
         //DINFO("core init begin %u %u flag %d\n", polling_core, cpuset_useable(), flag);
 
-        ret = hugepage_init(ltgconf_global.daemon, mask, ltgconf_global.use_huge);
+        ret = hugepage_init(ltgconf_global.daemon, mask, ltgconf_global.nr_hugepage);
         if (ret)
                 GOTO(err_ret, ret);
 
@@ -422,18 +450,23 @@ int core_init(uint64_t mask, int flag)
                         UNIMPLEMENTED(__DUMP__);
         }
 
-        ret = corenet_init(flag);
-        if (unlikely(ret))
-                GOTO(err_ret, ret);
+        if (flag & CORE_FLAG_NET) {
+                ret = corenet_init(flag);
+                if (unlikely(ret))
+                        GOTO(err_ret, ret);
 
-        ret = corerpc_init();
-        if (unlikely(ret))
-                GOTO(err_ret, ret);
-
-        ret = corenet_maping_init();
-        if (unlikely(ret))
-                GOTO(err_ret, ret);
-
+                ret = corerpc_init();
+                if (unlikely(ret))
+                        GOTO(err_ret, ret);
+                
+                ret = corenet_maping_init();
+                if (unlikely(ret))
+                        GOTO(err_ret, ret);
+        } else {
+                ret = core_event_init();
+                if (unlikely(ret))
+                        GOTO(err_ret, ret);
+        }
 #if 1
         ret = core_latency_init();
         if (unlikely(ret))
@@ -451,11 +484,11 @@ int core_attach(int hash, const sockid_t *sockid, const char *name,
         int ret;
         core_t *core;
 
-        DINFO("attach hash %d fd %d name %s\n", hash, sockid->sd, name);
+        DBUG("attach hash %d fd %d name %s\n", hash, sockid->sd, name);
 
         core = core_get(hash);
 
-        ret = corenet_attach(core->corenet, sockid, ctx, func, reset, check, NULL, name);
+        ret = corenet_tcp_attach(hash, sockid, ctx, func, reset, check, NULL, name);
         if (unlikely(ret))
                 GOTO(err_ret, ret);
 
@@ -630,7 +663,7 @@ int core_getid(coreid_t *coreid)
 
         if (unlikely(core == NULL)) {
                 ret = ENOSYS;
-                GOTO(err_ret, ret);
+                goto err_ret;
         }
 
         if (likely(ltgconf_global.daemon)) {
@@ -885,7 +918,7 @@ void coremask_trans(coremask_t *_coremask, uint64_t mask)
 
         memcpy(_coremask, &coremask, sizeof(coremask));
         
-        DINFO("mask 0x%x %s\n", mask, tmp);
+        DBUG("mask 0x%x %s\n", mask, tmp);
 }
 
 int coremask_hash(const coremask_t *coremask, uint64_t id)

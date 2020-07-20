@@ -11,7 +11,7 @@
 #define DBG_SUBSYS S_LTG_UTILS
 
 #include "ltg_utils.h"
-#include "core/sche.h"
+#include "core/core.h"
 #include "utils/fnotify.h"
 
 int __d_info__ = __D_INFO;
@@ -67,7 +67,19 @@ void dbg_level(int i)
 }
 
 #if 1
-int dmsg_init_sub(const char *name, const char *value,
+void closecoredump()
+{
+       int ret = 0;
+       struct rlimit rlim_new;
+
+       rlim_new.rlim_cur = rlim_new.rlim_max = 0;
+       ret = setrlimit(RLIMIT_CORE, &rlim_new);
+       if (ret) {
+                abort();
+       }
+}
+
+int __dmsg_init_sub(const char *name, const char *value,
                   int (*callback)(const char *buf, uint32_t flag),
                   uint32_t flag)
 {
@@ -147,6 +159,13 @@ err_ret:
         return ret;
 }       
 
+int dmsg_init_misc(const char *name, const char *value,
+                   int (*callback)(const char *buf, uint32_t flag),
+                   uint32_t flag)
+{
+     return __dmsg_init_sub(name, value, callback, flag);
+}
+
 int dmsg_init()
 {
         int ret;
@@ -154,13 +173,13 @@ int dmsg_init()
         DINFO("dmsg init %d\n", ltgconf_global.backtrace);
 
         if (ltgconf_global.backtrace) {
-                ret = dmsg_init_sub(DGOTO_PATH, "1", __dmsg_goto, 0);
+                ret = __dmsg_init_sub(DGOTO_PATH, "1", __dmsg_goto, 0);
                 if (unlikely(ret))
                         GOTO(err_ret, ret);
 
                 //dbg_goto(1);
         } else {
-                ret = dmsg_init_sub(DGOTO_PATH, "0", __dmsg_goto, 0);
+                ret = __dmsg_init_sub(DGOTO_PATH, "0", __dmsg_goto, 0);
                 if (unlikely(ret))
                         GOTO(err_ret, ret);
 
@@ -168,31 +187,46 @@ int dmsg_init()
         }
 
 #if 1
-        ret = dmsg_init_sub(DLEVEL_PATH, "1", __dmsg_level, 1);
+        ret = __dmsg_init_sub(DLEVEL_PATH, "1", __dmsg_level, 1);
         if (unlikely(ret))
                 GOTO(err_ret, ret);
 
-        ret = dmsg_init_sub(DBUG_UTILS_PATH, "0", __dmsg_sub, S_LTG_UTILS);
+        ret = __dmsg_init_sub(DBUG_UTILS_PATH, "0", __dmsg_sub, S_LTG_UTILS);
         if (unlikely(ret))
                 GOTO(err_ret, ret);
 
-        ret = dmsg_init_sub(DBUG_CORE_PATH, "0", __dmsg_sub, S_LTG_CORE);
+        ret = __dmsg_init_sub(DBUG_CORE_PATH, "0", __dmsg_sub, S_LTG_CORE);
         if (unlikely(ret))
                 GOTO(err_ret, ret);
         
-        ret = dmsg_init_sub(DBUG_NET_PATH, "0", __dmsg_sub, S_LTG_NET);
+        ret = __dmsg_init_sub(DBUG_NET_PATH, "0", __dmsg_sub, S_LTG_NET);
         if (unlikely(ret))
                 GOTO(err_ret, ret);
 
-        ret = dmsg_init_sub(DBUG_RPC_PATH, "0", __dmsg_sub, S_LTG_RPC);
+        ret = __dmsg_init_sub(DBUG_RPC_PATH, "0", __dmsg_sub, S_LTG_RPC);
         if (unlikely(ret))
                 GOTO(err_ret, ret);
 
-        ret = dmsg_init_sub(DBUG_MEM_PATH, "0", __dmsg_sub, S_LTG_MEM);
+        ret = __dmsg_init_sub(DBUG_MEM_PATH, "0", __dmsg_sub, S_LTG_MEM);
         if (unlikely(ret))
                 GOTO(err_ret, ret);
 #endif
         
+        return 0;
+err_ret:
+        return ret;
+}
+
+int dmsg_init_sub(const char *name, uint32_t flag)
+{
+        int ret;
+        char path[MAX_PATH_LEN];
+
+        snprintf(path, MAX_PATH_LEN, "/msgctl/sub/%s", name);
+        ret = __dmsg_init_sub(path, "0", __dmsg_sub, flag);
+        if (unlikely(ret))
+                GOTO(err_ret, ret);
+
         return 0;
 err_ret:
         return ret;
@@ -208,8 +242,17 @@ void sche_id(int *sid, int *taskid)
 #else
 void sche_id(int *sid, int *taskid)
 {
+        core_t *core = core_self();
         sche_t *sche = sche_self();
-        if (sche) {
+        if (core) {
+                *sid = core->hash;
+                if (core->sche) {
+                        *taskid = core->sche->running_task;
+                } else {
+                        *taskid = -1;
+                }
+
+        } else if (sche) {
                 *sid = sche->id;
                 *taskid = sche->running_task;
         } else {

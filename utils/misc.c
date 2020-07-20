@@ -10,8 +10,6 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <sys/vfs.h>
-#include <ustat.h>
-#include <openssl/sha.h>
 #include <stdarg.h>
 #include <ctype.h>
 #include <sys/wait.h>
@@ -601,32 +599,6 @@ const void IO_FUNC *_opaque_decode(const void *buf, uint32_t len, ...)
         return pos;
 }
 
-void _str_split(char *from, char split, char *to[], int *_count)
-{
-        int max, i;
-        char *pos;
-
-        if (from[strlen(from) - 1] == ',')
-                from[strlen(from) - 1] = '\0';
-
-        pos = from;
-        max = *_count;
-        to[0] = pos;
-        for (i = 1; i < max; i++) {
-                pos = strchr(pos, split);
-                if (pos) {
-                        pos[0] = '\0';
-                        pos++;
-                } else {
-                        break;
-                }
-
-                to[i] = pos;
-        }
-
-        *_count = i;
-}
-
 int _set_text(const char *path, const char *value, int size, int flag)
 {
         int ret, fd;
@@ -780,25 +752,12 @@ err_ret:
         return -ret;
 }
 
-int _errno(int ret)
-{
-        int i;
-        static int errlist[] = {EAGAIN, EREMCHG, ENONET, ETIMEDOUT, ETIME, EBUSY, ECONNREFUSED,
-                                ENOLCK, ENOSYS, ECANCELED, ESTALE, ECONNRESET, EADDRNOTAVAIL, EPERM, ENODEV};
-        static int count = sizeof(errlist) / sizeof(int);
-
-        for (i = 0; i < count; i++) {
-                if (errlist[i] == ret)
-                        return EAGAIN;
-        }
-
-        return ret;
-}
-
 int _errno_net(int ret)
 {
         int i;
-        static int errlist[] = {ENONET, ETIMEDOUT, ETIME, ECONNRESET, EHOSTUNREACH, EPIPE,  ECONNREFUSED};
+        static int errlist[] = {ENONET, ETIMEDOUT, ETIME, ECONNRESET,
+                                EHOSTUNREACH, EPIPE, ECONNREFUSED,
+                                EHOSTDOWN, EADDRNOTAVAIL};
         static int count = sizeof(errlist) / sizeof(int);
 
         for (i = 0; i < count; i++) {
@@ -867,11 +826,6 @@ void _backtrace(const char *name)
         _backtrace_caller(name, 2, MAX_BACKTRACE - 2);
 }
 
-void _backtrace1(const char *name, int start, int end)
-{
-        _backtrace_caller(name, start, start + end);
-}
-
 void calltrace(char *buf, size_t buflen)
 {
         void* array[MAX_BACKTRACE] = {0};
@@ -922,51 +876,11 @@ int ltg_thread_create(thread_func fn, void *arg, const char *name)
         if (unlikely(ret))
                 GOTO(err_ret, ret);
 
-        DINFO("thread %s started\n", name);
-
-        return 0;
-err_ret:
-        return ret;
-}
-
-int eventfd_poll(int fd, int tmo, uint64_t *_event)
-{
-        int ret, event;
-        struct pollfd pfd;
-        uint64_t e;
-
-        pfd.fd = fd;
-        pfd.events = POLLIN | POLLRDHUP | POLLERR | POLLHUP;
+        char tname[MAX_NAME_LEN];
+        snprintf(tname, MAX_BUF_LEN, "%s_%s", ltgconf_global.service_name, name);
+        (void) pthread_setname_np(th, tname);
         
-        while (1) { 
-                event = poll(&pfd, 1, tmo * 1000 * 1000);
-                if (event < 0)  {
-                        ret = errno;
-                        if (ret == EINTR) {
-                                DBUG("poll EINTR\n");
-                                continue;
-                        } else
-                                GOTO(err_ret, ret);
-                }
-
-                e = 0;
-                if (event) {
-                        ret = read(fd, &e, sizeof(e));
-                        if (ret < 0)  {
-                                ret = errno;
-                                if (ret == EAGAIN) {
-                                } else {
-                                        GOTO(err_ret, ret);
-                                }
-                        }
-                }
-
-                if (_event) {
-                        *_event = e;
-                }
-                
-                break;
-        }
+        DINFO("thread %s started\n", name);
 
         return 0;
 err_ret:
@@ -1104,4 +1018,80 @@ out:
         return 0;
 err_ret:
         return ret;
+}
+
+int timerange_create(timerange_t **range, const char *name, int64_t interval)
+{
+        int ret;
+        timerange_t *_range;
+
+        ret = ltg_malloc((void **)&_range, sizeof(timerange_t));
+        if (unlikely(ret))
+                UNIMPLEMENTED(__DUMP__);
+
+        timerange_init(_range, name, interval);
+
+        *range = _range;
+        return 0;
+}
+
+int timerange_destroy(timerange_t **range)
+{
+        ltg_free((void **)range);
+        return 0;
+}
+
+int timerange_init(timerange_t *range, const char *name, int64_t interval)
+{
+        strcpy(range->name, name);
+        range->interval = interval;
+        range->speed = 0;
+
+        _gettimeofday(&range->p1.t, NULL);
+        range->p1.count1 = 0;
+
+        _gettimeofday(&range->p2.t, NULL);
+        range->p2.count1 = 0;
+
+        ltg_spin_init(&range->spin);
+
+        return 0;
+}
+
+int timerange_update(timerange_t *range, uint64_t count1, timerange_func func, void *context)
+{
+        int ret;
+        _gettimeofday(&range->p2.t, NULL);
+        range->p2.count1 += count1;
+
+        ret = ltg_spin_lock(&range->spin);
+        if (unlikely(ret))
+                UNIMPLEMENTED(__DUMP__);
+
+        int64_t interval = _time_used(&range->p1.t, &range->p2.t);
+        if (interval >= range->interval) {
+                LTG_ASSERT(range->p2.count1 >= range->p1.count1);
+
+                range->speed = (range->p2.count1 - range->p1.count1) * 1000 * 1000 / interval;
+
+                DBUG("name %s[%p] interval %jd speed %4ju p1 %ju p2 %ju\n",
+                      range->name,
+                      range,
+                      interval,
+                      range->speed,
+                      range->p1.count1,
+                      range->p2.count1);
+
+                if (func) {
+                        func(range, interval, context);
+                }
+
+                range->p1 = range->p2;
+
+                ltg_spin_unlock(&range->spin);
+                return 1;
+        }
+
+        ltg_spin_unlock(&range->spin);
+        return 0;
 }

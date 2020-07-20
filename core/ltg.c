@@ -26,19 +26,22 @@ int ltg_nofile_max = 0;
 extern analysis_t *default_analysis;
 
 #define XMITBUF (1024 * 1024 * 100)     /* 100MB */
-#define MAX_OPEN_FILE 100000
 
-static int __get_nofailmax(int *nofilemax)
+static int __get_nofilemax(int daemon, int *nofilemax)
 {
         int ret;
         struct rlimit rlim_new;
 
-        rlim_new.rlim_cur = MAX_OPEN_FILE;
-        rlim_new.rlim_max = MAX_OPEN_FILE;
-        ret = setrlimit(RLIMIT_NOFILE, &rlim_new);
-        if (ret == -1) {
-                ret = errno;
-                GOTO(err_ret, ret);
+        (void) daemon;
+        
+        if (daemon) {
+                rlim_new.rlim_cur = ltgconf_global.nofile_max;
+                rlim_new.rlim_max = ltgconf_global.nofile_max;
+                ret = setrlimit(RLIMIT_NOFILE, &rlim_new);
+                if (ret == -1) {
+                        ret = errno;
+                        GOTO(err_ret, ret);
+                }
         }
         
         ret = getrlimit(RLIMIT_NOFILE, &rlim_new);
@@ -49,6 +52,8 @@ static int __get_nofailmax(int *nofilemax)
 
         *nofilemax = rlim_new.rlim_max;
 
+        DINFO("max open file %d\n", *nofilemax);
+        
         return 0;
 err_ret:
         return ret;
@@ -65,17 +70,10 @@ static void __ltg_global_init()
 
 int ltg_conf_init(ltgconf_t *ltgconf, const char *system_name)
 {
-        int ret;
-
         __ltg_global_init();
-
-        ret = __get_nofailmax(&ltg_nofile_max);
-        if (ret)
-                GOTO(err_ret, ret);
 
         memset(ltgconf, 0x0, sizeof(*ltgconf));
 
-        ltgconf->maxcore = 1;
         ltgconf->hb_retry = 2;
         ltgconf->coredump = 1;
         ltgconf->wmem_max = XMITBUF;
@@ -88,8 +86,6 @@ int ltg_conf_init(ltgconf_t *ltgconf, const char *system_name)
         strcpy(ltgconf_global.system_name, system_name);
         
         return 0;
-err_ret:
-        return ret;
 }
 
 static int __ltg_init_stage1(const nid_t *nid, const char *name)
@@ -97,6 +93,10 @@ static int __ltg_init_stage1(const nid_t *nid, const char *name)
         int ret;
 
         (void) name;
+
+        ret = __get_nofilemax(ltgconf_global.daemon, &ltg_nofile_max);
+        if (ret)
+                GOTO(err_ret, ret);
         
         fnotify_init();
         dmsg_init(ltgconf_global.system_name);
@@ -105,6 +105,10 @@ static int __ltg_init_stage1(const nid_t *nid, const char *name)
                 net_setnid(nid);
         }
 
+        ret = timer_init(0);
+        if (ret)
+                GOTO(err_ret, ret);
+        
         ret = sche_init();
         if (unlikely(ret))
                 GOTO(err_ret, ret);
@@ -116,7 +120,7 @@ static int __ltg_init_stage1(const nid_t *nid, const char *name)
                 if (unlikely(ret))             
                         GOTO(err_ret, ret);            
         }
-        
+
         ret = core_init(ltgconf_global.coremask, ltgconf_global.coreflag);
         if (ret)
                 GOTO(err_ret, ret);
@@ -172,9 +176,6 @@ int ltg_init(const ltgconf_t *ltgconf, const ltg_netconf_t *ltgnet_manage,
         int ret;
 
         memcpy(&ltgconf_global, ltgconf, sizeof(*ltgconf));
-
-        ltgconf_global.lease_timeout =  _max(3, ltgconf->rpc_timeout / 3); 
-        ltgconf_global.hb_timeout = _max(3, ltgconf->rpc_timeout / 3);
 
         ltg_netconf_global.count = 0;
 

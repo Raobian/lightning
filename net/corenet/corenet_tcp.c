@@ -153,49 +153,14 @@ static void __corenet_check_interval()
         ltg_spin_unlock(&__corenet__->corenet.lock);
 }
 
-void corenet_tcp_check_add()
-{
-        int ret;
-        corenet_tcp_t *__corenet__ = __corenet_get();
-        struct list_head *pos, *n, list;
-        corenet_node_t *node;
-
-        if (likely(list_empty(&__corenet__->corenet.add_list))) {
-                return;
-        }
-
-        INIT_LIST_HEAD(&list);
-
-        ret = ltg_spin_lock(&__corenet__->corenet.lock);
-        if (unlikely(ret))
-                UNIMPLEMENTED(__DUMP__);
-
-        list_splice_init(&__corenet__->corenet.add_list, &list);
-
-        ltg_spin_unlock(&__corenet__->corenet.lock);
-
-        list_for_each_safe(pos, n, &list) {
-                node = (void *)pos;
-                list_del(pos);
-
-                DINFO("add sd %d\n", node->sockid.sd);
-
-                ret = __corenet_add(__corenet__, &node->sockid, node->ctx, node->exec,
-                                    node->reset, node->check, node->recv, node->name);
-                if (unlikely(ret))
-                        UNIMPLEMENTED(__DUMP__);
-
-                ltg_free((void **)&node);
-        }
-}
-
 void corenet_tcp_check()
 {
         __corenet_check_interval();
 }
 
 static int __corenet_add(corenet_tcp_t *corenet, const sockid_t *sockid, void *ctx,
-                core_exec exec, func_t reset, func_t check, func_t recv, const char *name)
+                         core_exec exec, func_t reset, func_t check, func_t recv,
+                         const char *name)
 {
         int ret, event, sd;
         struct epoll_event ev;
@@ -206,7 +171,7 @@ static int __corenet_add(corenet_tcp_t *corenet, const sockid_t *sockid, void *c
         event = EPOLLIN;
         memset(&ev, 0x0, sizeof(struct epoll_event));
 
-        LTG_ASSERT(sd < 32768);
+        LTG_ASSERT(sd < ltg_nofile_max);
         node = &corenet->array[sd];
 
         if (node->ev & event) {
@@ -229,6 +194,12 @@ static int __corenet_add(corenet_tcp_t *corenet, const sockid_t *sockid, void *c
         node->recv = recv;
         node->check = check;
         node->sockid = *sockid;
+
+        LTG_ASSERT(node->name == NULL);
+        ret = ltg_malloc((void **)&node->name, strlen(name) + 1);
+        if (unlikely(ret))
+                UNIMPLEMENTED(__DUMP__);
+        
         strcpy(node->name, name);
 
         ev.data.fd = sd;
@@ -240,8 +211,8 @@ static int __corenet_add(corenet_tcp_t *corenet, const sockid_t *sockid, void *c
                 UNIMPLEMENTED(__DUMP__);//remove checklist
         }
 
-        DINFO("corenet_tcp connect %s[%u] %s sd %d, ev %o:%o\n", sche->name,
-              sche->id, node->name, sd, node->ev, event);
+        DBUG("corenet_tcp connect %s[%u] %s sd %d, ev %o:%o\n", sche->name,
+             sche->id, node->name, sd, node->ev, event);
 
         return 0;
 err_ret:
@@ -253,40 +224,58 @@ int corenet_tcp_add(corenet_tcp_t *corenet, const sockid_t *sockid, void *ctx,
                     func_t recv, const char *name)
 {
         int ret;
-        corenet_node_t *node;
 
-        //LTG_ASSERT(sockid->addr);
+        (void) corenet;
         LTG_ASSERT(sockid->type == SOCKID_CORENET);
 
-        if (corenet) {
-                ret = ltg_malloc((void **)&node, sizeof(*node));
-                if (unlikely(ret))
-                        GOTO(err_ret, ret);
-
-                node->sockid = *sockid;
-                node->ctx = ctx;
-                node->exec = exec;
-                node->reset = reset;
-                node->check = check;
-                node->recv = recv;
-                strcpy(node->name, name);
-
-                LTG_ASSERT(sockid->sd < ltg_nofile_max);
-                ret = ltg_spin_lock(&corenet->corenet.lock);
-                if (unlikely(ret))
-                        GOTO(err_ret, ret);
-
-                list_add_tail(&node->hook, &corenet->corenet.add_list);
-
-                ltg_spin_unlock(&corenet->corenet.lock);
-        } else {
-                ret = __corenet_add(__corenet_get(), sockid, ctx, exec,
-                                    reset, check, recv, name);
-                if (unlikely(ret)) {
-                        GOTO(err_ret, ret);
-                }
+        ret = __corenet_add(__corenet_get(), sockid, ctx, exec,
+                            reset, check, recv, name);
+        if (unlikely(ret)) {
+                GOTO(err_ret, ret);
         }
 
+        return 0;
+err_ret:
+        return ret;
+}
+
+static int __corenet_tcp_attach(va_list ap)
+{
+        int ret;
+        const sockid_t *sockid = va_arg(ap, const sockid_t *);
+        void *ctx = va_arg(ap, void *);
+        core_exec exec = va_arg(ap, core_exec);
+        func_t reset = va_arg(ap, func_t);
+        func_t check = va_arg(ap, func_t);
+        func_t recv = va_arg(ap, func_t);
+        const char *name = va_arg(ap, const char *);
+
+        va_end(ap);
+
+        ret = __corenet_add(__corenet_get(), sockid, ctx, exec,
+                            reset, check, recv, name);
+        if (unlikely(ret)) {
+                GOTO(err_ret, ret);
+        }
+
+        return 0;
+err_ret:
+        return ret;
+}
+
+int corenet_tcp_attach(int coreid, const sockid_t *sockid, void *ctx,
+                       core_exec exec, func_t reset, func_t check,
+                       func_t recv, const char *name)
+{
+        int ret;
+
+        LTG_ASSERT(sockid->type == SOCKID_CORENET);
+
+        ret = core_request(coreid, -1, "tcp attach", __corenet_tcp_attach,
+                           sockid, ctx, exec, reset, check, recv, name);
+        if (ret)
+                GOTO(err_ret, ret);
+        
         return 0;
 err_ret:
         return ret;
@@ -315,7 +304,7 @@ static void __corenet_close__(const sockid_t *sockid)
         //DBUG("close %d\n", sd);
 
         sd = node->sockid.sd;
-        DINFO("corenet_tcp close %s[%u] %s sd %d, ev %x\n", sche->name,
+        DBUG("corenet_tcp close %s[%u] %s sd %d, ev %x\n", sche->name,
               sche->id, node->name, sd, node->ev);
         LTG_ASSERT(node->ev);
 
@@ -342,12 +331,15 @@ static void __corenet_close__(const sockid_t *sockid)
                 __corenet_checklist_del(__corenet__, node);
         }
 
+        ltg_free((void **)&node->name);
+
         node->ev = 0;
         node->ctx = NULL;
         node->exec = NULL;
         node->reset = NULL;
         node->recv = NULL;
         node->sockid.sd = -1;
+        node->name = NULL;
 
 out:
 #if ENABLE_TCP_THREAD
@@ -447,7 +439,6 @@ static int __corenet_tcp_recv__(corenet_node_t *node, int toread)
         if (unlikely(ret))
                 GOTO(err_ret, ret);
 
-        LTG_ASSERT(buf.len <= (LLU)CORE_IOV_MAX * BUFFER_SEG_SIZE);
         DBUG("read data %u\n", toread);
 
 #if ENABLE_TCP_THREAD
@@ -464,7 +455,7 @@ static int __corenet_tcp_recv__(corenet_node_t *node, int toread)
         ltgbuf_merge(&node->recv_buf, &buf);
         DBUG("new recv %u, left %u\n", buf.len, node->recv_buf.len);
 
-        ANALYSIS_QUEUE(0, 10 * 1000, NULL);
+        ANALYSIS_QUEUE(0, IO_INFO, NULL);
 
         return 0;
 err_free:
@@ -496,6 +487,7 @@ static int __corenet_tcp_recv(corenet_node_t *node, int *count)
         left = toread;
         while (left) {
                 cp = _min(left, (LLU)BUFFER_SEG_SIZE * CORE_IOV_MAX);
+                cp = _min(cp, (1024 * 1024 * 90));
 
                 if ((uint64_t)toread > ((LLU)BUFFER_SEG_SIZE * CORE_IOV_MAX)) {
                         DINFO("long msg, total %u, left %u, read %u\n", toread, left, cp);
@@ -1103,9 +1095,9 @@ static int __corenet_tcp_exec(void *ctx, corenet_node_t *node, event_t *ev)
         sockid_t sockid = node->sockid;
 
         if (node->ev == 0 || node->sockid.sd == -1) {
-                 DERROR("node ev:%d, sockid sd:%d, ev->events:0x%x\n", node->ev, node->sockid.sd, ev->events);
-                 ret = ESTALE;
-                 return ret;
+                DERROR("node ev:%d, sockid sd:%d, ev->events:0x%x\n", node->ev, node->sockid.sd, ev->events);
+                ret = ESTALE;
+                return ret;
         }
 
         DBUG("ev %x\n", ev->events);
@@ -1421,17 +1413,16 @@ err_ret:
         return 0;
 }
 
-int corenet_tcp_init(int max, corenet_tcp_t **_corenet)
+int corenet_tcp_init(int count, corenet_tcp_t **_corenet)
 {
-        int ret, len, i, size;
+        int ret, len, i;
         corenet_tcp_t *corenet;
         corenet_node_t *node;
 
-        size = max;
+        len = sizeof(corenet_tcp_t) + sizeof(corenet_node_t) * count;
 
-        DINFO("malloc %ju\n", sizeof(corenet_node_t) * size);
+        DINFO("count %d size %d\n", count, len);
 
-        len = sizeof(corenet_tcp_t) + sizeof(corenet_node_t) * size;
         ret = ltg_malloc((void **)&corenet, len);
         if (unlikely(ret))
                 GOTO(err_ret, ret);
@@ -1439,9 +1430,9 @@ int corenet_tcp_init(int max, corenet_tcp_t **_corenet)
         DBUG("corenet use %u\n", len);
 
         memset(corenet, 0x0, len);
-        corenet->corenet.size = size;
+        corenet->corenet.count = count;
 
-        for (i = 0; i < size; i++) {
+        for (i = 0; i < count; i++) {
                 node = &corenet->array[i];
 
 #if ENABLE_TCP_THREAD
@@ -1453,7 +1444,7 @@ int corenet_tcp_init(int max, corenet_tcp_t **_corenet)
                 node->sockid.sd = -1;
         }
 
-        corenet->corenet.epoll_fd = epoll_create(corenet->corenet.size);
+        corenet->corenet.epoll_fd = epoll_create(corenet->corenet.count);
         if (corenet->corenet.epoll_fd == -1) {
                 ret = errno;
                 GOTO(err_free, ret);
@@ -1461,7 +1452,6 @@ int corenet_tcp_init(int max, corenet_tcp_t **_corenet)
 
         INIT_LIST_HEAD(&corenet->corenet.forward_list);
         INIT_LIST_HEAD(&corenet->corenet.check_list);
-        INIT_LIST_HEAD(&corenet->corenet.add_list);
 
         ret = ltg_spin_init(&corenet->corenet.lock);
         if (unlikely(ret))

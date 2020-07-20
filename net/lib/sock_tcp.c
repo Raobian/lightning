@@ -23,7 +23,7 @@ static int __tcp_connect(int s, const struct sockaddr *sin, socklen_t addrlen,
         int  ret, flags, err;
         socklen_t len;
 
-        LTG_ASSERT(timeout < 30);
+        LTG_ASSERT(timeout <= 1000 * 1000 && timeout >= 100 * 1000);
         /*
          * fill in sockaddr_in structure
          */
@@ -49,7 +49,7 @@ static int __tcp_connect(int s, const struct sockaddr *sin, socklen_t addrlen,
         } else
                 goto out;
 
-        ret = sock_poll_sd(s, timeout * 1000 * 1000, POLLOUT);
+        ret = sock_poll_sd(s, timeout, POLLOUT);
         if (unlikely(ret)) {
                 GOTO(err_ret, ret);
         }
@@ -394,7 +394,8 @@ int tcp_sock_accept(net_handle_t *nh, int srv_sd, int tuning, int nonblock)
         memset(&sin, 0, sizeof(sin));
         alen = sizeof(struct sockaddr_in);
 
-        sd = __tcp_accept(srv_sd, (struct sockaddr *)&sin, &alen, ltgconf_global.rpc_timeout / 2);
+        sd = __tcp_accept(srv_sd, (struct sockaddr *)&sin, &alen,
+                          ltgconf_global.rpc_timeout / 2);
         if (sd < 0) {
 	        ret = -sd;
                 DERROR("srv_sd %d, %u\n", srv_sd, ret);
@@ -424,6 +425,8 @@ int tcp_sock_connect(net_handle_t *nh, struct sockaddr_in *sin, int nonblock,
 {
         int ret, sd;
 
+        LTG_ASSERT(timeout <= 1000 * 1000 && timeout >= 100 * 1000);
+        
         sd = socket(PF_INET, SOCK_STREAM, 0);
         if (sd == -1) {
                 ret = errno;
@@ -634,9 +637,9 @@ int tcp_sock_getdevice(uint32_t _addr, char *name)
 
                 sin = (struct sockaddr_in *)&ifcreq->ifr_addr;
                 addr = sin->sin_addr.s_addr;
-                DINFO("ifname %s, %s\n", ifcreq->ifr_name, _inet_ntoa(addr));
+                DBUG("ifname %s, %s\n", ifcreq->ifr_name, _inet_ntoa(addr));
                 if (addr == _addr) {
-                        DINFO("ifname %s, %s\n", ifcreq->ifr_name, _inet_ntoa(addr));
+                        DBUG("ifname %s, %s\n", ifcreq->ifr_name, _inet_ntoa(addr));
                         strcpy(name, ifcreq->ifr_name);
                         done = 1;
                         break;

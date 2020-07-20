@@ -82,20 +82,12 @@ static void *__rpc_accept__(void *_arg)
 
         LTG_ASSERT(strcmp(info->name, "none"));
 
-        if (net_isnull(&info->id) || net_islocal(&info->id)) {
-                ret = sdevent_add(&newnh, NULL, LTG_EPOLL_EVENTS, NULL, NULL);
-                if (unlikely(ret)) {
-                        DINFO("accept from %s, sd %u ret:%d \n",
-                              _inet_ntoa(newnh.u.sd.addr), newnh.u.sd.sd, ret);
-                        GOTO(err_sd, ret);
-                }
-        } else {
-                ret = netable_accept(info, &newnh);
-                if (unlikely(ret)) {
-                        DINFO("accept from %s(%s), sd %u ret:%d\n",
-                               _inet_ntoa(newnh.u.sd.addr), info->name, newnh.u.sd.sd, ret);
-                        GOTO(err_sd, ret);
-                }
+        ret = sdevent_add(&newnh, NULL, LTG_EPOLL_EVENTS);
+        if (unlikely(ret)) {
+                DINFO("accept from %s, sd %u ret:%d \n",
+                      _inet_ntoa(newnh.u.sd.addr),
+                      newnh.u.sd.sd, ret);
+                GOTO(err_sd, ret);
         }
 
         ANALYSIS_END(0, IO_WARN, NULL);
@@ -104,7 +96,7 @@ static void *__rpc_accept__(void *_arg)
 
         pthread_exit(NULL);
 err_sd:
-        sdevent_close_force(&newnh);
+        sdevent_close(&newnh);
 err_ret:
         ltg_free((void **)&_arg);
         pthread_exit(NULL);
@@ -150,8 +142,8 @@ static void *__rpc_accept_worker(void *_arg)
 
         main_loop_hold();
 
-        while (1) {
-                ret = sock_poll_sd(__pasv_sd__, 1000 * 1000, POLLIN);
+        while (srv_running) {
+                ret = sock_poll_sd(__pasv_sd__, 1000 * 100, POLLIN);
                 if (unlikely(ret)) {
                         if (ret == ETIMEDOUT || ret == ETIME)
                                 continue;
@@ -161,7 +153,7 @@ static void *__rpc_accept_worker(void *_arg)
 
                 ret = __rpc_accept();
                 if (unlikely(ret)) {
-                        ret = _errno(ret);
+                        ret = _errno_net(ret);
                         if (ret == EAGAIN)
                                 continue;
                         else
